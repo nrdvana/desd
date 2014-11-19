@@ -12,9 +12,8 @@ handle port80: TCP:80
 handle port443: TCP:443
 # If you wanted to pass the file sockets to Desd using the same trick, so that
 # Desd doesn't need to run as root, you could say:
-# handle port80: 
-# on numbered file descriptors at startup, and then it *doesn't* need to run as
-# root.
+# handle port80: /proc/self/fd/3
+# handle port443: /proc/self/fd/4
 
 # Define a global logger for all services (and desd itself)
 # This program relays it all to syslog.
