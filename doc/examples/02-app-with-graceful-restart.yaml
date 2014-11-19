@@ -1,0 +1,47 @@
+# This is an example of how to write a service which listens on an existing
+# socket, rather than binding its own.  When you restart this app, the new
+# instance first checks that it loaded successfully, and then tells Desd to
+# shut down the old one, and then begins listening on the socket.
+#
+# This requires a specially written app.  However the code involved isn't
+# complicated and it should be easy to patch most open-source projects.
+---
+# desd must run as root in order to bind to these ports
+# However, the webserver doesn't!
+handle port80: TCP:80
+handle port443: TCP:443
+# If you wanted to pass the file sockets to Desd using the same trick, so that
+# Desd doesn't need to run as root, you could say:
+# handle port80: 
+# on numbered file descriptors at startup, and then it *doesn't* need to run as
+# root.
+
+# Define a global logger for all services (and desd itself)
+# This program relays it all to syslog.
+logger: logger -p daemon.www
+
+service www:
+  # These environment variables tell our www daemon where to find its sockets
+  env:
+    WWW_DESD_COMM_FD: 3
+    WWW_PORT80_FD: 4
+    WWW_PORT443_FD: 5
+  
+  # Configure the file descriptors for all actions of this service
+  io: null logger logger desd_comm port80 port443
+  
+  # The start action runs the webserver
+  # Note we use 'runuid' (from the Perp project) to drop root priveleges
+  action start: runuid -s www /usr/local/bin/my_webserver /srv/www
+  
+  # The reset action starts a new copy of the webserver, which after
+  # initializing itself and running self-tests, will use file descriptor 3
+  # (desd_comm) to ask desd to promote it to the main service process, and
+  # then "action stop" the old one.  When desd replies "ok", this instance
+  # will begin accepting requests on the port 80 and 443 (file descriptors
+  # 4 and 5)  No connection was ever rejected during this handoff, even if
+  # the startup of the new process took a while.
+  action restart:
+    run: runuid -s www /usr/local/bin/my_webserver /srv/www
+    # need to override set-mode so that Desd doesn't stop/start the service
+    set-mode: up
