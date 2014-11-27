@@ -75,7 +75,7 @@ specify an array it will be pased to exec() with automatic argv0.
 
 =item argv0:
 
-If you need to override argv[0] in the call to exec, specify this parameter.
+If you need to override argv[0] in the call to run, specify this parameter.
 
 =item io:
 
@@ -84,17 +84,6 @@ as defined in the rest of your desd configuration.  The default is to use the
 handles defined for the service, which default to [ null, log, log, desd_comm ],
 where log is the logger for this service and desd_comm is the control socket
 for this service to make API requests to desd.
-
-=item killscript:
-
-This executes before anything specified in "run".  It is a string of signal
-names and decimal numbers that represent kill commands and wait-with-timeout.
-
-Example: "SIGTERM SIGCONT 30 SIGTERM 20 SIGQUIT 5 SIGKILL"
-
-That will send SIGTERM, SIGCONT, wait up to 30 seconds for the process to exit,
-then if not it will send SIGTERM again and wait up to 20 seconds, then send
-SIGQUIT and wait up to 5 seconds before sending SIGKILL.
 
 =item env:
 
