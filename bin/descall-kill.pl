@@ -29,15 +29,15 @@ calling "kill"/"sleep" directly from your script:
 
 =item *
 
-By using a unix "wait()", the delay ends as soon as the process is reaped and
+By using a unix "wait()", the delay ends as soon as the process is reaped, and
 there is no unnecessary idle time.
 
 =item *
 
-When desd perform the kill() there is no race condition, where the process
-could be reaped and a new one spawned with that PID right before the kill is
-delivered.  (while unlikely, it is entirely possible to happen on a highly
-loaded server)
+When desd performs the kill() there is no race condition.  (when any process
+other than the parent issues a kill, the target could get reaped and the PID
+recycled before the signal is delivered, killing an unintended process.
+While unlikely, it is entirely possible on a highly loaded server)
 
 =back
 
@@ -48,15 +48,15 @@ need to specify C<--service> and/or C<--basedir> and/or C<--socket> options.
 
 =head1 OPTIONS
 
-No options are needed for the default desd actions (other than "start") where
-the socket exists on file descriptor 3 and the environment variables
-DESD_SV_NAME and DESD_COMM_FD are set.
+No options are needed when running from a desd action with the default 'io'
+and 'env' settings.  (it will use file descriptor 3 and $DESD_SV_NAME)
 
 =over
 
 =item --basedir
 
-Tells this script the root of the desd instance.  Defaults to C<$DESD_BASEDIR>
+Tells this script the base directory of the desd instance (which is used to
+resolve relative paths).  Defaults to C<$DESD_BASEDIR>
 
 =item --socket
 
@@ -84,7 +84,7 @@ Invalid options or arguments or environment
 
 =item 2
 
-The target service did not terminate.
+The killscript ran, but the target service did not terminate.
 
 =back
 
