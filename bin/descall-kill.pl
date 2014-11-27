@@ -94,10 +94,11 @@ use strict;
 use warnings;
 use Pod::Usage;
 use Getopt::Long;
+use IO::Handle;
 
-my $opt_basedir= $ENV{DESD_BASEDIR} || '';
-my $opt_sv_name= $ENV{DESD_SV_NAME} || '';
-my $opt_socket=  $ENV{DESD_COMM_FD} || '';
+my $opt_basedir= $ENV{DESD_BASEDIR} // '';
+my $opt_sv_name= $ENV{DESD_SV_NAME} // '';
+my $opt_socket=  $ENV{DESD_COMM_FD} // '';
 
 GetOptions(
 	'help|h|?'  => sub { pod2usage(1) },
@@ -115,11 +116,16 @@ length $opt_socket
 	or length $opt_basedir
 	or die "No socket available (missing \$DESD_COMM_FD or --socket or --basedir)\n";
 
+# Check the killscript for sanity
+@ARGV && !grep { /[^\w.]/ } @ARGV
+	or die "Invalid killscript: ".join(' ', @ARGV)."\n";
+
 # If socket is a number, use that file descriptor
 my $sock;
 if ($opt_socket =~ /^[0-9]+$/) {
-	open $sock, '+<&=', $opt_socket
+	$sock= IO::Handle->new_from_fd($opt_socket, "r+")
 		or die "fdopen($opt_socket) failed: $!\n";
+	$sock->autoflush(1);
 }
 # else try connecting to the socket.
 else {
@@ -128,32 +134,34 @@ else {
 		: $opt_socket;
 	-S $path
 		or die "No such socket '$path'\n";
-	
 	require Socket;
-	socket($sock, Socket::PF_UNIX, Socket::SOCK_STREAM, 0)
+	socket($sock, Socket::PF_UNIX(), Socket::SOCK_STREAM(), 0)
 		or die "socket: $!\n";
-	my $addr= pack_sockaddr_un($path);
+	my $addr= Socket::pack_sockaddr_un($path);
 	connect($sock, $addr)
 		or die "Unable to connect to desd: $!\n";
 }
 
 # Call the killscript function
-print $sock join("\t", 0, 'killscript', $opt_sv_name, @ARGV)."\n";
+print $sock join("\t", 'killscript', $opt_sv_name, @ARGV)."\n";
 
 # Read the result
-while (<$sock>) {
-	my ($id, $result, $msg)= split /\t/, $_;
-	if ($id eq 0) {
-		if ($result eq 'reaped') {
-			exit(0);
-		} elsif ($result eq 'not_running') {
-			exit(0);
-		} elsif ($result eq 'still_running') {
-			exit(2);
-		} else {
-			die "Unknown response from desd: '$result'\n";
-		}
-	}
+my $response= <$sock>;
+defined $response
+	or die "lost connection to desd: $!\n";
+
+# First field tells the outcome of the killscript
+# More fields may be added later.
+my ($result)= split /[\t\n]/, $response;
+
+if ($result eq 'reaped') {
+	exit(0);
+} elsif ($result eq 'not_running') {
+	exit(0);
+} elsif ($result eq 'invalid') {
+	die "Invalid killscript: ".join(' ', @ARGV)."\n";
+} elsif ($result eq 'still_running') {
+	exit(2);
+} else {
+	die "Unknown response from desd: '$result'\n";
 }
-# We didn't get a response?
-die "lost connection to desd: $!\n";
