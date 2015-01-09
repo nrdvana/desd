@@ -59,4 +59,47 @@ the type of the event.  Every command will generate at least one event of either
 "ok" or "error", with following fields that depend on the command.  The "ok" or
 "error" event always come at the completion of the command.
 
+=head2 Commands
+
+=head3 killscript
+
+  killscript SERVICE_NAME ACTION(s) ...
+
+This command asks Desd to kill the named service with a specified sequence of
+kill() and wait().
+
+The list of actions are given as separate protocol fields.
+
+An action is either a decimal number of seconds to wait, or one of these signal
+names: SIGCONT, SIGTERM, SIGHUP, SIGQUIT, SIGINT, SIGUSR1, SIGUSR2, SIGKILL.
+Other signal names may be available.
+
+The command will complete with one of the following responses:
+
+=over
+
+=item ok reaped EXIT_REASON EXIT_VALUE
+
+successful termination of the job
+
+EXIT_REASON is either "exit" (with a numeric EXIT_VALUE) or "signal" (with a signal name for EXIT_VALUE)
+
+=item ok not_running
+
+the job wasn't running in the first place
+
+=item error still_running
+
+the job has not terminated by the end of the script
+
+=item error invalid
+
+the killscript was invalid, or the job isn't defined
+
+=item error denied
+
+the caller doesn't have permission to send signals to the job
+
+=back
+
 =cut
