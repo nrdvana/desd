@@ -64,6 +64,83 @@ the type of the event.  Every command will generate at least one event of either
 
 my @commands;
 
+=head2 service_action
+
+  service_action SERVICE_NAME ACTION_NAME
+
+Perform one of the actions (defined in the config file) for the given service.
+
+Each service has default actions like 'start' and 'stop', but might also
+have custom actions like 'check' or 'graceful_reload'.  This command starts
+any of the actions, and returns when the action is complete.  HOWEVER, some
+actions may only perform a state change, and don't wait for the consequences
+to occur, so you might need to listen to other events instead of just waiting
+for the completion of the action.  There can be only one action occurring on
+a service at any moment.  If the action you request is already in progress,
+then this will simply notify you when that action-in-progress completes.  If
+you have requested a different action, then this one will be queued and start
+immediately after the other one completes.
+
+The command will return one of the following responses:
+
+=over
+
+=item ok complete
+
+the action you specified has completed on this service
+
+=item error invalid
+
+the service does not exist or the action isn't defined
+
+=item error denied
+
+the caller doesn't have permission to perform this action on this service
+
+=back
+
+=cut
+
+sub _validate_svname {
+	($_[0]//'') =~ /^[\w.-]+$/ or die "Invalid service name";
+	1;
+}
+
+sub _validate_action {
+	($_[0]//'') =~ /^[\w.-]+$/ or die "Invalid action name";
+	1;
+}
+
+sub service_action {
+	my ($self, $svname, $act)= @_;
+	_validate_svname($svname);
+	_validate_action($act);
+	$self->send(0, 'service_action', $svname, $act);
+	return $self->recv_result(0);
+}
+sub async_service_action {
+	my ($self, $svname, $act, $callback)= @_;
+	_validate_svname($svname);
+	_validate_action($act);
+	my $cmd_id= $self->send(undef, 'service_action', $svname, $act);
+	$self->{_response_callback}{$cmd_id}= $callback;
+	1;
+}
+sub handle_service_action {
+	my ($self, $cmd_id, $svname, $act, $callback)= @_;
+	try {
+		_validate_svname($svname);
+		_validate_action($act);
+		$self->{app}->assert_permission($self->{session}{keys}, 'service_action', $svname, $act);
+		$self->{app}->service_action($svname, $act, sub {
+			my %args= @_;
+			$self->send($cmd_id, 'ok', 'complete');
+		});
+	} catch {
+		$self->send($cmd_id, 'error', ($_ =~ /denied/)? 'denied' : 'invalid');
+	};
+}
+
 =head3 killscript
 
   killscript SERVICE_NAME ACTION(s) ...
@@ -109,9 +186,9 @@ the caller doesn't have permission to send signals to the job
 
 sub _validate_killscript_args {
 	@_ > 1 or die "Require service name and script";
-	($_[0]//'') =~ /^[\w.-]+$/ or die "Invalid service name";
+	_validate_svname(shift);
 	($_//'') =~ /^(SIG[A-Z0-9]+)|([0-9]+(\.[0-9]+))$/ or die "Invalid script element '$_'"
-		for @_[1..$#_];
+		for @_;
 	1;
 }
 
