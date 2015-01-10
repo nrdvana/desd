@@ -9,12 +9,11 @@ use Moo;
   my $proto= App::Desd::Protocol->new(server => $socket);
   
   # use synchronous API:
-  $proto->$command( @args );
-  my $response= $proto->result;
+  my $success= $proto->$command( \@args, \@optional_result_out );
   
   # optionally, use event-driven API:
   $proto->set_async_event_cb( \&callback );
-  $proto->async_$command( [@args], \&callback );
+  $proto->async_$command( \@args, \&callback );
 
 
   # this class also implements the server side, which is always asynchronous
@@ -61,6 +60,10 @@ the type of the event.  Every command will generate at least one event of either
 
 =head2 Commands
 
+=cut
+
+my @commands;
+
 =head3 killscript
 
   killscript SERVICE_NAME ACTION(s) ...
@@ -103,3 +106,45 @@ the caller doesn't have permission to send signals to the job
 =back
 
 =cut
+
+sub _validate_killscript_args {
+	@_ > 1 or die "Require service name and script";
+	($_[0]//'') =~ /^[\w.-]+$/ or die "Invalid service name";
+	($_//'') =~ /^(SIG[A-Z0-9]+)|([0-9]+(\.[0-9]+))$/ or die "Invalid script element '$_'"
+		for @_[1..$#_];
+	1;
+}
+
+sub killscript {
+	my ($self, @args)= @_;
+	_validate_killscript_args(@args);
+	$self->send(0, 'killscript', @args);
+	return $self->recv_result(0);
+}
+sub async_killscript {
+	my ($self, $args, $callback)= @_;
+	_validate_killscript_args(@$args);
+	my $cmd_id= $self->send(undef, 'killscript', @$args);
+	$self->{_response_callback}{$cmd_id}= $callback;
+	1;
+}
+sub handle_killscript {
+	my ($self, $cmd_id, $svcname, @script)= @_;
+	try {
+		_validate_killscript_args($svcname, @script);
+		$self->{app}->assert_permission($self->{session}{keys}, 'kill_service', $svcname);
+		$self->{app}->killscript($svcname, \@script, sub {
+			my %args= @_;
+			if ($args{success}) {
+				$self->send($cmd_id, 'ok', $args{reaped}? ('reaped', $args{exit_type}, $args{exit_value}) : 'not_running');
+			} else {
+				$self->send($cmd_id, 'error', $args{timeout}? 'still_running' : 'failed');
+			}
+		});
+	}
+	catch {
+		$self->send($cmd_id, 'error', ($_ =~ /denied/)? 'denied' : 'invalid');
+	};
+}
+
+1;

@@ -61,7 +61,7 @@ resolve relative paths).  Defaults to C<$DESD_BASEDIR>
 =item --socket
 
 Path to socket or integer file handle of existing socket.  Defaults to
-DESD_COMM_FD if set, or C<basedir/desd.sock> if C<$DESD_BASEDIR> is set or
+DESD_COMM_FD if set, or C<$basedir/desd.sock> if C<$DESD_BASEDIR> is set or
 C<--basedir> was given.
 
 =item --service
