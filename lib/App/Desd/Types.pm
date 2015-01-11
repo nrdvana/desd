@@ -10,6 +10,15 @@ use Types::Standard -types;
 
 declare 'ServiceName',   where { ($_//'') =~ /^[\w.-]+$/ };
 declare 'ServiceAction', where { ($_//'') =~ /^[\w.-]+$/ };
-declare 'KillScript',    where { ($_//'') =~ /^(SIG[A-Z0-9]+)|([0-9]+(\.[0-9]+))$/ };
+declare 'KillScript',    where { ($_//'') =~
+	/^
+	  (
+	    (SIG[A-Z0-9]+) | ([0-9]+(\.[0-9]+)) # signal name, or positive whole or fractional number
+	  )
+	  ( [ ] ( # any number of space-delimited repeat of above
+	    (SIG[A-Z0-9]+) | ([0-9]+(\.[0-9]+))
+	  ))*
+	$/x
+};
 
 1;

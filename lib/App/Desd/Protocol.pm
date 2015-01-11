@@ -137,16 +137,20 @@ sub handle_service_action {
 
 =head3 killscript
 
-  killscript SERVICE_NAME ACTION(s) ...
+  killscript SERVICE_NAME SCRIPT
 
 This command asks Desd to kill the named service with a specified sequence of
 kill() and wait().
 
-The list of actions are given as separate protocol fields.
+The script is a space-separated list of signal names and decimal wait-for-exit numbers.
 
-An action is either a decimal number of seconds to wait, or one of these signal
-names: SIGCONT, SIGTERM, SIGHUP, SIGQUIT, SIGINT, SIGUSR1, SIGUSR2, SIGKILL.
-Other signal names may be available.
+Example:
+  SIGTERM 20 SIGTERM 5.5 SIGKILL 10
+
+The numbers indicate a time in seconds (and may be fractional) to wait for the
+service to exit before sending the next signal.
+
+Available signals will depend on the system's perl.
 
 The command will complete with one of the following responses:
 
@@ -179,27 +183,27 @@ the caller doesn't have permission to send signals to the job
 =cut
 
 sub killscript {
-	my ($self, $svname, @script)= @_;
+	my ($self, $svname, $script)= @_;
 	ServiceName->assert_valid($svname);
-	KillScript->assert_valid($_) for @script;
-	$self->send(0, 'killscript', $svname, @args);
+	KillScript->assert_valid($script);
+	$self->send(0, 'killscript', $svname, $script);
 	return $self->recv_result(0);
 }
 sub async_killscript {
 	my ($self, $svname, $script, $callback)= @_;
 	ServiceName->assert_valid($svname);
-	KillScript->assert_valid($_) for @$script;
-	my $cmd_id= $self->send(undef, 'killscript', $svname, @$script);
+	KillScript->assert_valid($script);
+	my $cmd_id= $self->send(undef, 'killscript', $svname, $script);
 	$self->{_response_callback}{$cmd_id}= $callback;
 	1;
 }
 sub handle_killscript {
-	my ($self, $cmd_id, $svcname, @script)= @_;
+	my ($self, $cmd_id, $svcname, $script)= @_;
 	try {
 		ServiceName->assert_valid($svcname);
-		KillScript->assert_valid($_) for @script;
+		KillScript->assert_valid($script);
 		$self->{app}->assert_permission($self->{session}{keys}, 'kill_service', $svcname);
-		$self->{app}->killscript($svcname, \@script, sub {
+		$self->{app}->killscript($svcname, $script, sub {
 			my %args= @_;
 			if ($args{success}) {
 				$self->send($cmd_id, 'ok', $args{reaped}? ('reaped', $args{exit_type}, $args{exit_value}) : 'not_running');
