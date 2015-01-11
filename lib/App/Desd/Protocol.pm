@@ -2,6 +2,7 @@ package App::Desd::Protocol;
 use AnyEvent;
 use Try::Tiny;
 use App::Desd::Types -types;
+use Carp;
 use Moo;
 use namespace::clean;
 
@@ -66,7 +67,36 @@ the type of the event.  Every command will generate at least one event of either
 
 =cut
 
-my @commands;
+our %commands;
+
+sub _register_msg {
+	$_[0] =~ /::/ or unshift @_, scalar caller;
+	my ($class, $cmd, $opts)= @_;
+	$class->can('assemble_msg_'.$cmd) or croak "Missing assemble_msg for $cmd";
+	$class->can('handle_msg_'.$cmd) or croak "Missing handle_msg for $cmd";
+	my $assemble= "assemble_msg_$cmd";
+	my $synch= sub { my $self= shift; my @msg= $self->$assemble(@_); return $self->synch_msg(\@msg) };
+	my $async= sub { my $self= shift; my @msg= $self->$assemble(@_); return $self->async_msg(\@msg) };
+	
+	no strict 'refs';
+	${$class.'::commands'}{$cmd}= $opts;
+	*{$class.'::'.$cmd}= $synch;
+	*{$class.'::async_'.$cmd}= $async;
+}
+
+sub synch_msg {
+	my ($self, $msg)= @_;
+	$self->send(0, $msg);
+	return $self->recv_result(0);
+}
+
+sub async_msg {
+	my ($self, $msg)= @_;
+	my $promise= AnyEvent->condvar;
+	my $cmd_id= $self->send(undef, $msg);
+	$self->{_pending_commands}{$cmd_id}= { msg => $msg, promise => $promise };
+	return $promise;
+}
 
 =head2 service_action
 
@@ -105,25 +135,13 @@ the caller doesn't have permission to perform this action on this service
 
 =cut
 
-sub service_action {
-	my $self= shift;
-	$self->send(0, $self->assemble_msg_service_action(@_));
-	return $self->recv_result(0);
-}
-sub async_service_action {
-	my $self= shift;
-	my $callback= pop;
-	my @msg= $self->assemble_msg_service_action(@_);
-	my $cmd_id= $self->send(undef, @msg);
-	$self->{_pending_commands}{$cmd_id}= { msg => \@msg, callback => $callback };
-	1;
-}
+_register_msg('service_action');
 
 sub assemble_msg_service_action {
 	my ($self, $svname, $act)= @_;
 	ServiceName->assert_valid($svname);
 	ServiceAction->assert_valid($act);
-	return 'service_action', $svname, $act);
+	return 'service_action', $svname, $act;
 }
 sub handle_msg_service_action {
 	my ($self, $cmd_id, $svname, $act, $callback)= @_;
@@ -187,19 +205,7 @@ the caller doesn't have permission to send signals to the job
 
 =cut
 
-sub killscript {
-	my $self= shift;
-	$self->send(0, $self->assemble_msg_killscript(@_));
-	return $self->recv_result(0);
-}
-sub async_killscript {
-	my $self= shift;
-	my $callback= pop;
-	my @msg= $self->assemble_msg_killscript(@_);
-	my $cmd_id= $self->send(undef, @msg);
-	$self->{_pending_commands}{$cmd_id}= { msg => \@msg, callback => $callback };
-	1;
-}
+_register_msg('killscript');
 
 sub assemble_msg_killscript {
 	my ($self, $svcname, $script)= @_;
