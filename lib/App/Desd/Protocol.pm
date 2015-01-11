@@ -84,20 +84,6 @@ sub _register_msg {
 	*{$class.'::async_'.$cmd}= $async;
 }
 
-sub synch_msg {
-	my ($self, $msg)= @_;
-	$self->send(0, $msg);
-	return $self->recv_result(0);
-}
-
-sub async_msg {
-	my ($self, $msg)= @_;
-	my $promise= AnyEvent->condvar;
-	my $cmd_id= $self->send(undef, $msg);
-	$self->{_pending_commands}{$cmd_id}= { msg => $msg, promise => $promise };
-	return $promise;
-}
-
 =head2 service_action
 
   service_action SERVICE_NAME ACTION_NAME
@@ -231,6 +217,58 @@ sub handle_msg_killscript {
 	catch {
 		$self->send($cmd_id, 'error', ($_ =~ /denied/)? 'denied' : 'invalid');
 	};
+}
+
+=head1 METHODS
+
+=head2 synch_msg
+
+  $response= $proto->synch_msg( \@message );
+
+Sends a message and waits for the response, returning the response as an arrayref.
+
+The first element of the response array is always 'ok' or 'error'.
+
+=cut
+
+sub synch_msg {
+	my ($self, $msg)= @_;
+	$self->send(0, @$msg);
+	return $self->recv_result(0);
+}
+
+=head2 async_msg
+
+  $promise= $proto->async_msg( \@message );
+
+Like synch_msg, but returns a promise (AnyEvent cont var) for the result.
+
+=cut
+
+sub async_msg {
+	my ($self, $msg)= @_;
+	my $promise= AnyEvent->condvar;
+	my $cmd_id= $self->{_next_cmd_id}++;
+	$self->send($cmd_id, @$msg);
+	$self->{_pending_commands}{$cmd_id}= { msg => $msg, promise => $promise };
+	return $promise;
+}
+
+=head2 send
+
+  $proto->send( @fields )
+
+Joins the fields into a line of text and sends it over the socket.  The first field
+must always be a number (the message-id).
+
+=cut
+
+sub send {
+	my $self= shift;
+	MessageInstance->assert_valid($_[0]);
+	MessageField->assert_valid($_) for @_;
+	my $text= join("\t", @_)."\n";
+	$self->{socket}->print($text) or die "write: $!";
 }
 
 1;
