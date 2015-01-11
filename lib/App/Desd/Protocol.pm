@@ -1,5 +1,9 @@
 package App::Desd::Protocol;
+use AnyEvent;
+use Try::Tiny;
+use App::Desd::Types -types;
 use Moo;
+use namespace::clean;
 
 =head1 SYNOPSIS
 
@@ -101,27 +105,17 @@ the caller doesn't have permission to perform this action on this service
 
 =cut
 
-sub _validate_svname {
-	($_[0]//'') =~ /^[\w.-]+$/ or die "Invalid service name";
-	1;
-}
-
-sub _validate_action {
-	($_[0]//'') =~ /^[\w.-]+$/ or die "Invalid action name";
-	1;
-}
-
 sub service_action {
 	my ($self, $svname, $act)= @_;
-	_validate_svname($svname);
-	_validate_action($act);
+	ServiceName->assert_valid($svname);
+	ServiceAction->assert_valid($act);
 	$self->send(0, 'service_action', $svname, $act);
 	return $self->recv_result(0);
 }
 sub async_service_action {
 	my ($self, $svname, $act, $callback)= @_;
-	_validate_svname($svname);
-	_validate_action($act);
+	ServiceName->assert_valid($svname);
+	ServiceAction->assert_valid($act);
 	my $cmd_id= $self->send(undef, 'service_action', $svname, $act);
 	$self->{_response_callback}{$cmd_id}= $callback;
 	1;
@@ -129,8 +123,8 @@ sub async_service_action {
 sub handle_service_action {
 	my ($self, $cmd_id, $svname, $act, $callback)= @_;
 	try {
-		_validate_svname($svname);
-		_validate_action($act);
+		ServiceName->assert_valid($svname);
+		ServiceAction->assert_valid($act);
 		$self->{app}->assert_permission($self->{session}{keys}, 'service_action', $svname, $act);
 		$self->{app}->service_action($svname, $act, sub {
 			my %args= @_;
@@ -184,31 +178,26 @@ the caller doesn't have permission to send signals to the job
 
 =cut
 
-sub _validate_killscript_args {
-	@_ > 1 or die "Require service name and script";
-	_validate_svname(shift);
-	($_//'') =~ /^(SIG[A-Z0-9]+)|([0-9]+(\.[0-9]+))$/ or die "Invalid script element '$_'"
-		for @_;
-	1;
-}
-
 sub killscript {
-	my ($self, @args)= @_;
-	_validate_killscript_args(@args);
-	$self->send(0, 'killscript', @args);
+	my ($self, $svname, @script)= @_;
+	ServiceName->assert_valid($svname);
+	KillScript->assert_valid($_) for @script;
+	$self->send(0, 'killscript', $svname, @args);
 	return $self->recv_result(0);
 }
 sub async_killscript {
-	my ($self, $args, $callback)= @_;
-	_validate_killscript_args(@$args);
-	my $cmd_id= $self->send(undef, 'killscript', @$args);
+	my ($self, $svname, $script, $callback)= @_;
+	ServiceName->assert_valid($svname);
+	KillScript->assert_valid($_) for @$script;
+	my $cmd_id= $self->send(undef, 'killscript', $svname, @$script);
 	$self->{_response_callback}{$cmd_id}= $callback;
 	1;
 }
 sub handle_killscript {
 	my ($self, $cmd_id, $svcname, @script)= @_;
 	try {
-		_validate_killscript_args($svcname, @script);
+		ServiceName->assert_valid($svcname);
+		KillScript->assert_valid($_) for @script;
 		$self->{app}->assert_permission($self->{session}{keys}, 'kill_service', $svcname);
 		$self->{app}->killscript($svcname, \@script, sub {
 			my %args= @_;
