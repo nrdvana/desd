@@ -106,21 +106,26 @@ the caller doesn't have permission to perform this action on this service
 =cut
 
 sub service_action {
-	my ($self, $svname, $act)= @_;
-	ServiceName->assert_valid($svname);
-	ServiceAction->assert_valid($act);
-	$self->send(0, 'service_action', $svname, $act);
+	my $self= shift;
+	$self->send(0, $self->assemble_msg_service_action(@_));
 	return $self->recv_result(0);
 }
 sub async_service_action {
-	my ($self, $svname, $act, $callback)= @_;
-	ServiceName->assert_valid($svname);
-	ServiceAction->assert_valid($act);
-	my $cmd_id= $self->send(undef, 'service_action', $svname, $act);
-	$self->{_response_callback}{$cmd_id}= $callback;
+	my $self= shift;
+	my $callback= pop;
+	my @msg= $self->assemble_msg_service_action(@_);
+	my $cmd_id= $self->send(undef, @msg);
+	$self->{_pending_commands}{$cmd_id}= { msg => \@msg, callback => $callback };
 	1;
 }
-sub handle_service_action {
+
+sub assemble_msg_service_action {
+	my ($self, $svname, $act)= @_;
+	ServiceName->assert_valid($svname);
+	ServiceAction->assert_valid($act);
+	return 'service_action', $svname, $act);
+}
+sub handle_msg_service_action {
 	my ($self, $cmd_id, $svname, $act, $callback)= @_;
 	try {
 		ServiceName->assert_valid($svname);
@@ -183,21 +188,26 @@ the caller doesn't have permission to send signals to the job
 =cut
 
 sub killscript {
-	my ($self, $svname, $script)= @_;
-	ServiceName->assert_valid($svname);
-	KillScript->assert_valid($script);
-	$self->send(0, 'killscript', $svname, $script);
+	my $self= shift;
+	$self->send(0, $self->assemble_msg_killscript(@_));
 	return $self->recv_result(0);
 }
 sub async_killscript {
-	my ($self, $svname, $script, $callback)= @_;
-	ServiceName->assert_valid($svname);
-	KillScript->assert_valid($script);
-	my $cmd_id= $self->send(undef, 'killscript', $svname, $script);
-	$self->{_response_callback}{$cmd_id}= $callback;
+	my $self= shift;
+	my $callback= pop;
+	my @msg= $self->assemble_msg_killscript(@_);
+	my $cmd_id= $self->send(undef, @msg);
+	$self->{_pending_commands}{$cmd_id}= { msg => \@msg, callback => $callback };
 	1;
 }
-sub handle_killscript {
+
+sub assemble_msg_killscript {
+	my ($self, $svcname, $script)= @_;
+	ServiceName->assert_valid($svcname);
+	KillScript->assert_valid($script);
+	return 'killscript', $svcname, $script;
+}
+sub handle_msg_killscript {
 	my ($self, $cmd_id, $svcname, $script)= @_;
 	try {
 		ServiceName->assert_valid($svcname);
