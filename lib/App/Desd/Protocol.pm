@@ -4,6 +4,8 @@ use Try::Tiny;
 use App::Desd::Types -types;
 use Carp;
 use Moo;
+use Module::Runtime;
+use mro 'c3';
 use namespace::clean;
 
 =head1 SYNOPSIS
@@ -67,21 +69,40 @@ the type of the event.  Every command will generate at least one event of either
 
 =cut
 
-our %commands;
+# "message_defs" is a package variable whose keys can be auto-overlaid by subclasses.
+my %message_defs;
+sub _get_linear_message_defs {
+	($_[1]= __PACKAGE__),pop @_ if @_ > 1;
+	return \%message_defs;
+}
 
-sub _register_msg {
-	$_[0] =~ /::/ or unshift @_, scalar caller;
-	my ($class, $cmd, $opts)= @_;
-	$class->can('assemble_msg_'.$cmd) or croak "Missing assemble_msg for $cmd";
-	$class->can('handle_msg_'.$cmd) or croak "Missing handle_msg for $cmd";
-	my $assemble= "assemble_msg_$cmd";
-	my $synch= sub { my $self= shift; my @msg= $self->$assemble(@_); return $self->synch_msg(\@msg) };
-	my $async= sub { my $self= shift; my @msg= $self->$assemble(@_); return $self->async_msg(\@msg) };
-	
-	no strict 'refs';
-	${$class.'::commands'}{$cmd}= $opts;
-	*{$class.'::'.$cmd}= $synch;
-	*{$class.'::async_'.$cmd}= $async;
+sub _register_message {
+	my $class= (defined $_[0] && ($_[0] =~ /::/))? shift : scalar caller;
+	@_ & 1 or croak 'Wrong number of arguments to _register_message($name, %opts)';
+	my ($msg, %opts)= @_;
+	$opts{message}= $msg;
+
+	my @stack= $class->_get_linear_message_defs(my $pkg);
+	if ($pkg ne $class) {
+		check_module_name($class); # caution, since we're using eval
+		mro::set_mro($class, 'c3'); # any class using this needs to be c3
+		eval 'package '.$class.'; my %message_defs; sub _get_linear_message_defs { ($_[1]= __PACKAGE__),pop @_ if @_ > 1; return \%message_defs, shift->maybe::next::method }; 1'
+			== 1 or die $@;
+		@stack= $class->_get_linear_message_defs;
+	}
+	$stack[0]{$msg}= \%opts;
+}
+
+sub get_message_defs {
+	my $class= shift;
+	return { map { %$_ } reverse $class->_get_linear_message_defs };
+}
+
+sub get_message_info {
+	my ($class, $msg)= @_;
+	defined $_->{$msg} and return $_->{$msg}
+		for $class->_get_linear_message_defs;
+	return;
 }
 
 =head2 service_action
@@ -121,7 +142,7 @@ the caller doesn't have permission to perform this action on this service
 
 =cut
 
-_register_msg('service_action');
+_register_message('service_action');
 
 sub assemble_msg_service_action {
 	my ($self, $svname, $act)= @_;
@@ -191,7 +212,7 @@ the caller doesn't have permission to send signals to the job
 
 =cut
 
-_register_msg('killscript');
+_register_message('killscript');
 
 sub assemble_msg_killscript {
 	my ($self, $svcname, $script)= @_;
