@@ -300,24 +300,18 @@ the caller doesn't have permission to perform this action on this service
 
 _register_message('service_action');
 
-sub assemble_msg_service_action {
-	my ($self, $svname, $act)= @_;
-	ServiceName->assert_valid($svname);
-	ServiceAction->assert_valid($act);
-	return 'service_action', $svname, $act;
+sub validate_msg_service_action {
+	my ($self, $msg)= @_;
+	ServiceName->assert_valid($msg->[1]);
+	ServiceAction->assert_valid($msg->[2]);
 }
+
 sub handle_msg_service_action {
-	my ($self, $cmd_id, $svname, $act, $callback)= @_;
-	try {
-		ServiceName->assert_valid($svname);
-		ServiceAction->assert_valid($act);
-		$self->app->assert_permission($self->{session}{keys}, 'service_action', $svname, $act);
-		$self->app->service_action($svname, $act, sub {
-			my %args= @_;
-			$self->send($cmd_id, 'ok', 'complete');
-		});
-	} catch {
-		$self->send($cmd_id, 'error', ($_ =~ /denied/)? 'denied' : 'invalid');
+	my ($self, $cmd_id, $msg)= @_;
+	my (undef, $svname, $act)= @$msg;
+	my $promise= $self->app->service_action($svname, $act);
+	return $promise, subname 'handle_msg_service_action(2)' => sub {
+		return 'ok', 'complete';
 	};
 }
 
@@ -370,29 +364,83 @@ the caller doesn't have permission to send signals to the job
 
 _register_message('killscript');
 
-sub assemble_msg_killscript {
-	my ($self, $svcname, $script)= @_;
-	ServiceName->assert_valid($svcname);
-	KillScript->assert_valid($script);
-	return 'killscript', $svcname, $script;
+sub validate_msg_killscript {
+	my ($self, $msg)= @_;
+	ServiceName->assert_valid($msg->[1]);
+	KillScript->assert_valid($msg->[2]);
 }
+
 sub handle_msg_killscript {
-	my ($self, $cmd_id, $svcname, $script)= @_;
-	try {
-		ServiceName->assert_valid($svcname);
-		KillScript->assert_valid($script);
-		$self->app->assert_permission($self->session->{keys}, 'kill_service', $svcname);
-		$self->app->killscript($svcname, $script, sub {
-			my %args= @_;
-			if ($args{success}) {
-				$self->send($cmd_id, 'ok', $args{reaped}? ('reaped', $args{exit_type}, $args{exit_value}) : 'not_running');
-			} else {
-				$self->send($cmd_id, 'error', $args{timeout}? 'still_running' : 'failed');
-			}
-		});
+	my ($self, $cmd_id, $msg)= @_;
+	my (undef, $svcname, $script)= @$msg;
+	my $promise= $self->app->killscript($svcname, $script);
+	return $promise, subname 'handle_msg_killscript(2)' => sub {
+		my $res= shift;
+		# check that the result is formed the way we expect.
+		exists $res->{$_} or croak for qw( success reaped exit_type exit_value timeout );
+		if ($res->{success}) {
+			return 'ok', $res->{reaped}? ('reaped', $res->{exit_type}, $res->{exit_value}) : 'not_running';
+		} else {
+			return 'error', $res->{timeout}? 'still_running' : 'failed';
+		}
+	});
+}
+
+sub _server_handle_input_line {
+	my ($self, $input)= @_;
+	# get message id and message name
+	chomp($input);
+	my ($msg_id, @msg)= split /\t/, $input;
+	# if id is in use, kill the previous invocation and complain loudly
+	...;
+	# validate message name and validate payload
+	...;
+	# dispatch to the handle_msg_ method
+	$self->_server_run_handler($msg_id, ..., [ $msg_id, $msg ]);
+	
+		my @result= ...;
+		$self->_server_handle_handler_result($id, @result);
 	}
 	catch {
-		$self->send($cmd_id, 'error', ($_ =~ /denied/)? 'denied' : 'invalid');
+	};
+}
+
+sub _server_run_handler {
+	my ($self, $msg_id, $coderef, $args)= @_;
+	try {
+		if (ref $args and $args->can('recv')) {
+			# If arguments are a promise, receive the value now
+			$args= [ $args->recv ];
+		}
+		# Run the handler
+		my @result= $coderef->(@args);
+		# Handler must return the message response (list of protocol fields),
+		#  or a promise and callback method for asynchronous completion
+		@result > 0 or die 'Handler returned empty result';
+		unless (ref $result[0] && $result[0]->can('recv')) {
+			# if it returns the response, queue the response to go to the client
+			$self->send($id, @result);
+			# and clean up the message handling state
+			...;
+		}
+		else {
+			ref $result[1] eq 'CODE' or die 'Promise must be accompanied by coderef';
+			# if it returns a promise, store the promise in pending_commands
+			$self->_pending_commands->{$msg_id}{continue}= \@result;
+			# If there wasn't a callback on the promise, set one, which calls back through this
+			# handler logic.
+			unless ($result[0]->cb) {
+				weaken($self);
+				my $callback= $result[1];
+				$result[0]->cb(sub { $self->_server_run_handler($msg_id, $callback, $_[0]) });
+			}
+		}
+	}
+	catch {
+		# send a 'failed' result
+		$self->send($id, 'error', $_ =~ /denied/? 'denied' : 'failed');
+		# and clean up the message handling state
+		...;
 	};
 }
 
@@ -460,8 +508,14 @@ These are available when the protocol object is used for the server side:
 
 =cut
 
-has 'app',               is => 'rw';
+has 'app',               is => 'rw', required => 1;
 has '_pending_commands', is => 'rw', init_arg => undef, default => sub {{}};
+
+sub BUILD {}
+
+after 'BUILD' => subname after_BUILD => sub {
+	# set up server events on $self->handle_ae
+};
 
 };
 1;
