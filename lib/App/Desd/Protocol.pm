@@ -1,31 +1,30 @@
-package App::Desd::Protocol;
+package App::Desd::Protocol {
 use AnyEvent;
 use Try::Tiny;
 use App::Desd::Types -types;
 use Carp;
-use Moo;
 use Module::Runtime;
+use Sub::Name;
 use mro 'c3';
+use Moo;
 use namespace::clean;
 
 =head1 SYNOPSIS
 
   # client connecting to server
-  my $proto= App::Desd::Protocol->connect('/path/to/socket');
-  -or-
-  my $proto= App::Desd::Protocol->new(server => $socket);
+  my $proto= App::Desd::Protocol->new_client($socket);
   
   # use synchronous API:
-  my $success= $proto->$command( \@args, \@optional_result_out );
+  my $result= $proto->$command( @args );
   
   # optionally, use event-driven API:
-  $proto->set_async_event_cb( \&callback );
-  $proto->async_$command( \@args, \&callback );
+  my $promise= $proto->async_$command( @args );
+  my $result= $promise->recv;
 
 
   # this class also implements the server side, which is always asynchronous
   $socket= accept(...);
-  my $proto= App::Desd::Protocol->new(client => $socket, app => $app);
+  my $proto= App::Desd::Protocol->new_server($socket, $app);
   
   # the $proto holds a ref to the socket, so you just need to hold a ref
   # to the proto object to keep it open.
@@ -35,6 +34,151 @@ use namespace::clean;
 Desd has a command/response and optionally event-based protocol.  This protocol
 is used both for the connections to the main desd socket, and for the pipes
 it opens to the child processes.
+
+=head1 ATTRIBUTES
+
+=head2 handle
+
+The socket connection on which to communicate
+
+=head2 handle_ae
+
+The AnyEvent::Handle used for asynchronous queueing of read/write operations.
+
+=cut
+
+has 'handle',    is => 'rw', required => 1;
+has 'handle_ae', is => 'rw';
+
+=head2 
+
+=head1 METHODS
+
+=head2 new
+
+Creates an instance of the protocol with no designated client/server role.
+You probably want new_client or new_server.
+
+=head2 new_client
+
+  my $proto= App::Desd::Protocol->new_client($socket, %opts);
+
+Combines this protocol class with the client role, giving you convenient
+access to the messages defined in the protocol as methods, and with automatic
+tracking of server responses to messages, for easy remote method calls.
+
+=cut
+
+sub new_client {
+	@_ >= 2 && (@_ & 1) == 0 or croak "Wrong number of arguments";
+	my ($class, $socket, %opts)= @_;
+	
+	# if socket is a path, connect to it
+	unless (ref $socket) {
+		my $path= $socket;
+		$socket= undef;
+		require Socket;
+		socket($socket, Socket::AF_UNIX(), Socket::SOCK_STREAM(), 0)
+			or croak "Can't create socket: $!";
+		connect($socket, Socket::sockaddr_un($path))
+			or croak "Can't connect to $path: $!";
+	}
+	
+	my $handle_ae= $socket->can('push_write')? $socket : undef;
+	$socket= $handle_ae->fh if defined $handle_ae;
+	
+	return $class
+		->_with_client_role
+		->new( handle => $socket, handle_ae => $handle_ae, %opts );
+}
+
+sub _with_client_role {
+	my $class= shift;
+	return Moo::Role->create_class_with_roles($class, 'App::Desd::Protocol::ClientRole');
+}
+
+=head2 new_server
+
+  my $proto= App::Desd::Protocol->new_server($socket, $desd_instance, %opts);
+
+Combines this protocol class with the server role, giving you automatic
+linkage between client requests and an instance of the desd application.
+
+=cut
+
+sub new_server {
+	@_ >= 3 && (@_ & 1) == 1 or croak "Wrong number of arguments";
+	my ($class, $socket, $app, %opts)= @_;
+	
+	my $handle_ae= $socket->can('push_write')? $socket : undef;
+	$socket= $handle_ae->fh if defined $handle_ae;
+	
+	return $class
+		->_with_server_role
+		->new( handle => $socket, handle_ae => $handle_ae, app => $app, %opts );
+}
+
+sub _with_server_role {
+	my $class= shift;
+	return Moo::Role->create_class_with_roles($class, 'App::Desd::Protocol::ServerRole');
+}
+
+=head2 send
+
+  $proto->send( @fields )
+
+Joins the fields into a line of text and sends it over the socket, blocking until it has
+all been written.  The first field must always be a number (the message-id).
+
+=cut
+
+sub send {
+	my $self= shift;
+	MessageInstance->assert_valid($_[0]);
+	MessageField->assert_valid($_) for @_;
+	my $text= join("\t", @_)."\n";
+	$self->flush;
+	io_retry:
+	my $wrote= CORE::send($self->handle_fd, $text, 0)
+		or croak "send: $!";
+	if ($wrote < length($text)) {
+		substr($text, 0, $wrote)= '';
+		goto io_retry;
+	}
+	1;
+}
+
+=head2 async_send
+
+  $proto->async_send( @fields )
+
+Like send, but pushes the data into an AnyEvent queue.
+
+=cut
+
+sub async_send {
+	my $self= shift;
+	MessageInstance->assert_valid($_[0]);
+	MessageField->assert_valid($_) for @_;
+	my $text= join("\t", @_)."\n";
+	$self->handle_ae->push_write($text);
+}
+
+=head2 flush
+
+  $proto->flush
+
+Block until all pending data is written
+
+=cut
+
+sub flush {
+	my $self= shift;
+	return unless defined $self->{handle_ae};
+	my $flushed= AnyEvent->condvar;
+	$self->handle_ae->on_drain(sub { $flushed->send(1) });
+	$flushed->recv;
+}
 
 =head1 PROTOCOL
 
@@ -76,6 +220,12 @@ sub _get_linear_message_defs {
 	return \%message_defs;
 }
 
+my $install_method= sub {
+	my ($class, $name, $coderef)= @_;
+	return if $class->can($name);
+	no strict 'refs';
+	*{$class.'::'.$name}= subname $class.'::'.$name, $coderef;
+};
 sub _register_message {
 	my $class= (defined $_[0] && ($_[0] =~ /::/))? shift : scalar caller;
 	@_ & 1 or croak 'Wrong number of arguments to _register_message($name, %opts)';
@@ -84,13 +234,19 @@ sub _register_message {
 
 	my @stack= $class->_get_linear_message_defs(my $pkg);
 	if ($pkg ne $class) {
-		check_module_name($class); # caution, since we're using eval
+		Module::Runtime::check_module_name($class); # caution, since we're using eval
 		mro::set_mro($class, 'c3'); # any class using this needs to be c3
 		eval 'package '.$class.'; my %message_defs; sub _get_linear_message_defs { ($_[1]= __PACKAGE__),pop @_ if @_ > 1; return \%message_defs, shift->maybe::next::method }; 1'
 			== 1 or die $@;
 		@stack= $class->_get_linear_message_defs;
 	}
+
 	$stack[0]{$msg}= \%opts;
+
+	# install convenience and default methods for this message
+	$install_method->($class, $msg         => sub { shift->send_msg([$msg, @_]); });
+	$install_method->($class, "async_$msg" => sub { shift->async_send_msg([$msg, @_]); });
+	$install_method->($class, "validate_msg_$msg" => sub {1});
 }
 
 sub get_message_defs {
@@ -155,8 +311,8 @@ sub handle_msg_service_action {
 	try {
 		ServiceName->assert_valid($svname);
 		ServiceAction->assert_valid($act);
-		$self->{app}->assert_permission($self->{session}{keys}, 'service_action', $svname, $act);
-		$self->{app}->service_action($svname, $act, sub {
+		$self->app->assert_permission($self->{session}{keys}, 'service_action', $svname, $act);
+		$self->app->service_action($svname, $act, sub {
 			my %args= @_;
 			$self->send($cmd_id, 'ok', 'complete');
 		});
@@ -225,8 +381,8 @@ sub handle_msg_killscript {
 	try {
 		ServiceName->assert_valid($svcname);
 		KillScript->assert_valid($script);
-		$self->{app}->assert_permission($self->{session}{keys}, 'kill_service', $svcname);
-		$self->{app}->killscript($svcname, $script, sub {
+		$self->app->assert_permission($self->session->{keys}, 'kill_service', $svcname);
+		$self->app->killscript($svcname, $script, sub {
 			my %args= @_;
 			if ($args{success}) {
 				$self->send($cmd_id, 'ok', $args{reaped}? ('reaped', $args{exit_type}, $args{exit_value}) : 'not_running');
@@ -240,11 +396,25 @@ sub handle_msg_killscript {
 	};
 }
 
-=head1 METHODS
+};
 
-=head2 synch_msg
+package App::Desd::Protocol::ClientRole {
+use Try::Tiny;
+use Carp;
+use Moo::Role;
 
-  $response= $proto->synch_msg( \@message );
+=head1 CLIENT ATTRIBUTES / METHODS
+
+These are available when the protocol object is used for the client side:
+
+=cut
+
+has '_pending_commands', is => 'rw', init_arg => undef, default => sub {{}};
+sub _next_cmd_id { $_[0]{_next_cmd_id}++ || 0 }
+
+=head2 send_msg
+
+  $response= $proto->send_msg( \@message );
 
 Sends a message and waits for the response, returning the response as an arrayref.
 
@@ -252,13 +422,14 @@ The first element of the response array is always 'ok' or 'error'.
 
 =cut
 
-sub synch_msg {
+sub send_msg {
 	my ($self, $msg)= @_;
+	$self->can('validate_msg_'.$msg->[0])->($self, $msg);
 	$self->send(0, @$msg);
 	return $self->recv_result(0);
 }
 
-=head2 async_msg
+=head2 async_send_msg
 
   $promise= $proto->async_msg( \@message );
 
@@ -266,30 +437,31 @@ Like synch_msg, but returns a promise (AnyEvent cont var) for the result.
 
 =cut
 
-sub async_msg {
+sub async_send_msg {
 	my ($self, $msg)= @_;
+	$self->can('validate_msg_'.$msg->[0])->($self, $msg);
 	my $promise= AnyEvent->condvar;
-	my $cmd_id= $self->{_next_cmd_id}++;
-	$self->send($cmd_id, @$msg);
-	$self->{_pending_commands}{$cmd_id}= { msg => $msg, promise => $promise };
+	my $cmd_id= $self->_next_cmd_id;
+	$self->async_send($cmd_id, @$msg);
+	$self->_pending_commands->{$cmd_id}= { msg => $msg, promise => $promise };
 	return $promise;
 }
 
-=head2 send
+};
 
-  $proto->send( @fields )
+package App::Desd::Protocol::ServerRole {
+use Try::Tiny;
+use Carp;
+use Moo::Role;
 
-Joins the fields into a line of text and sends it over the socket.  The first field
-must always be a number (the message-id).
+=head1 SERVER ATTRIBUTES / METHODS
+
+These are available when the protocol object is used for the server side:
 
 =cut
 
-sub send {
-	my $self= shift;
-	MessageInstance->assert_valid($_[0]);
-	MessageField->assert_valid($_) for @_;
-	my $text= join("\t", @_)."\n";
-	$self->{socket}->print($text) or die "write: $!";
-}
+has 'app',               is => 'rw';
+has '_pending_commands', is => 'rw', init_arg => undef, default => sub {{}};
 
+};
 1;
