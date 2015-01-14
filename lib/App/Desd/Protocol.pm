@@ -1,11 +1,13 @@
 package App::Desd::Protocol {
 use AnyEvent;
+use AnyEvent::Handle;
 use Try::Tiny;
 use App::Desd::Types -types;
 use Carp;
 use Module::Runtime;
 use Sub::Name;
 use Scalar::Util 'blessed', 'weaken';
+use Log::Any '$log';
 use mro 'c3';
 use Moo;
 use namespace::clean;
@@ -49,7 +51,13 @@ The AnyEvent::Handle used for asynchronous queueing of read/write operations.
 =cut
 
 has 'handle',    is => 'rw', required => 1;
-has 'handle_ae', is => 'rw';
+
+has 'handle_ae', is => 'lazy', predicate => 1;
+
+sub _build_handle_ae {
+	require AnyEvent::Handle;
+	AnyEvent::Handle->new(fh => $_[0]->handle, linger => 0);
+}
 
 =head2 
 
@@ -90,7 +98,7 @@ sub new_client {
 	
 	return $class
 		->_with_client_role
-		->new( handle => $socket, handle_ae => $handle_ae, %opts );
+		->new( handle => $socket, (defined $handle_ae? (handle_ae => $handle_ae) : ()), %opts );
 }
 
 sub _with_client_role {
@@ -113,6 +121,7 @@ sub new_server {
 	
 	my $handle_ae= $socket->can('push_write')? $socket : undef;
 	$socket= $handle_ae->fh if defined $handle_ae;
+	$handle_ae //= AnyEvent::Handle->new(fh => $socket);
 	
 	return $class
 		->_with_server_role
@@ -140,8 +149,10 @@ sub send {
 	my $text= join("\t", @_)."\n";
 	$self->flush;
 	io_retry:
-	my $wrote= CORE::send($self->handle_fd, $text, 0)
-		or croak "send: $!";
+	my $wrote= CORE::send($self->handle, $text, 0)
+		// croak "send: $!";
+	$log->trace("wrote $wrote '".substr($text,0,$wrote)."'")
+		if $log->is_trace;
 	if ($wrote < length($text)) {
 		substr($text, 0, $wrote)= '';
 		goto io_retry;
@@ -163,6 +174,7 @@ sub async_send {
 	MessageField->assert_valid($_) for @_;
 	my $text= join("\t", @_)."\n";
 	$self->handle_ae->push_write($text);
+	$log->trace("queued write ".length($text)." '$text'") if $log->is_trace;
 }
 
 =head2 flush
@@ -175,7 +187,7 @@ Block until all pending data is written
 
 sub flush {
 	my $self= shift;
-	return unless defined $self->{handle_ae};
+	return unless $self->has_handle_ae;
 	my $flushed= AnyEvent->condvar;
 	$self->handle_ae->on_drain(sub { $flushed->send(1) });
 	$flushed->recv;
@@ -221,7 +233,7 @@ sub _get_linear_message_defs {
 	return \%message_defs;
 }
 
-my $install_method= sub {
+my $install_missing_method= sub {
 	my ($class, $name, $coderef)= @_;
 	return if $class->can($name);
 	no strict 'refs';
@@ -245,9 +257,9 @@ sub _register_message {
 	$stack[0]{$msg}= \%opts;
 
 	# install convenience and default methods for this message
-	$install_method->($class, $msg         => sub { shift->send_msg([$msg, @_]); });
-	$install_method->($class, "async_$msg" => sub { shift->async_send_msg([$msg, @_]); });
-	$install_method->($class, "validate_msg_$msg" => sub {1});
+	$install_missing_method->($class, $msg         => sub { shift->send_msg([$msg, @_]); });
+	$install_missing_method->($class, "async_$msg" => sub { shift->async_send_msg([$msg, @_]); });
+	$install_missing_method->($class, "validate_msg_$msg" => sub {1});
 }
 
 sub get_message_defs {
@@ -260,6 +272,22 @@ sub get_message_info {
 	defined $_->{$msg} and return $_->{$msg}
 		for $class->_get_linear_message_defs;
 	return;
+}
+
+=head2 echo
+
+  echo FIELD1 FIELD2 ...
+
+Send a list of fields to desd.  Desd will always reply 'ok' followed by the
+same fields.  This is a simple way to test communication.
+
+=cut
+
+_register_message('echo');
+
+sub handle_msg_echo {
+	my ($self, $cmd_id, $msg)= @_;
+	return 'ok', @{$msg}[1..$#$msg];
 }
 
 =head2 service_action
@@ -387,82 +415,13 @@ sub handle_msg_killscript {
 	};
 }
 
-sub _server_handle_input_line {
-	my ($self, $input)= @_;
-	# get message id and message name
-	chomp($input);
-	my ($msg_id, @msg)= split /\t/, $input;
-	my $msgname= $msg[0];
-	
-	if (!MessageInstance->check_valid($msg_id)) {
-		# TODO: this is erious enough the server might want to disconnect the client.
-		# make a callback to receive this condition
-		return $self->send(0, 'error', 'invalid protocol formatting');
-	}
-	
-	# if id is in use, kill the previous invocation and complain loudly
-	if (defined $self->_pending_commands->{$msg_id}) {
-		...;
-	}
-	
-	# ensure validate and handle are defined for this message
-	my ($validate, $handler);
-	unless (MessageName->check_valid($msgname)
-	  and ($validate= $self->can("validate_msg_$msgname"))
-	  and ($handler= $self->can("handle_msg_$msgname"))
-	) {
-		return $self->send($msg_id, 'error', 'invalid', "unknown message $msgname");
-	}
-	
-	# validate message payload
-	if (!try { $validate->($self, \@msg); 1; } catch { 0 }) {
-		return $self->send($msg_id, 'error', 'invalid', "bad message arguments");
-	}
-	
-	# dispatch to the handle_msg_ method
-	$self->_pending_commands->{$msg_id}= { message => \@msg, start_ts => time };
-	$self->_server_run_handler($msg_id, $handler, [ $msg_id, \@msg ]);
+sub close {
+	$_[0]->handle->close if defined $_[0]->handle;
+	$_[0]->handle_ae->destroy if $_[0]->has_handle_ae;
 }
 
-sub _server_run_handler {
-	my ($self, $msg_id, $handler, $args)= @_;
-	try {
-		if (blessed($args) and $args->can('recv')) {
-			# If arguments are a promise, receive the value now
-			# this could also croak() us down to the catch block.
-			$args= [ $args->recv ];
-		}
-		# Run the handler
-		my @result= $handler->($self, @$args);
-		# Handler must return the message response (list of protocol fields),
-		#  or a promise and callback method for asynchronous completion
-		@result > 0 or die 'Handler returned empty result';
-		unless (ref $result[0] && $result[0]->can('recv')) {
-			# if it returns the response, queue the response to go to the client
-			$self->send($msg_id, @result);
-			# and clean up the message handling state
-			...;
-		}
-		else {
-			ref $result[1] eq 'CODE' or die 'Promise must be accompanied by coderef';
-			# if it returns a promise, store the promise in pending_commands
-			$self->_pending_commands->{$msg_id}{continue}= \@result;
-			# If there wasn't a callback on the promise, set one, which calls back through this
-			# handler logic.
-			unless ($result[0]->cb) {
-				my $callback= $result[1];
-				my $anon_name= '_server_run_handler(continue-'.++$self->_pending_commands->{$msg_id}{continue_count}.')';
-				weaken($self);
-				$result[0]->cb(subname $anon_name => sub { $self->_server_run_handler($msg_id, $callback, $_[0]) });
-			}
-		}
-	}
-	catch {
-		# send a 'failed' result
-		$self->send($msg_id, 'error', $_ =~ /denied/? 'denied' : 'failed');
-		# and clean up the message handling state
-		...;
-	};
+sub DESTROY {
+	$_[0]->close;
 }
 
 };
@@ -521,6 +480,9 @@ sub async_send_msg {
 package App::Desd::Protocol::ServerRole {
 use Try::Tiny;
 use Carp;
+use Log::Any '$log';
+use Scalar::Util 'weaken', 'blessed';
+use App::Desd::Types -types;
 use Sub::Name;
 use Moo::Role;
 
@@ -530,14 +492,129 @@ These are available when the protocol object is used for the server side:
 
 =cut
 
-has 'app',               is => 'rw', required => 1;
-has '_pending_commands', is => 'rw', init_arg => undef, default => sub {{}};
+has 'app',            is => 'rw', required => 1;
+has '_command_state', is => 'rw', init_arg => undef, default => sub {{}};
 
 sub BUILD {}
 
 after 'BUILD' => subname 'after(BUILD)' => sub {
-	# set up server events on $self->handle_ae
+	my $self= shift;
+	weaken($self);
+	$self->handle_ae->on_read(sub {
+		$log->trace('on_read: '.length($_[0]{rbuf}).' in buffer') if $log->is_trace;
+		my $p= index($_[0]{rbuf}, "\n");
+		if ($p >= 0) {
+			my $line= substr($_[0]{rbuf}, 0, $p);
+			substr($_[0]{rbuf}, 0, $p+1)= '';
+			$self->_handle_input_line($line);
+		}
+	});
+	$self->handle_ae->on_error(sub {
+		$self->close();
+	});
+	$self->handle_ae->on_eof(sub {
+		$self->close();
+	});
+	$log->debug('set server event handlers');
 };
+
+sub _handle_input_line {
+	my ($self, $input)= @_;
+	# get message id and message name
+	$log->debug('handle input "'.$input.'"');
+	my ($msg_id, @msg)= split /\t/, $input;
+	my $msgname= $msg[0];
+	
+	unless (MessageInstance->check($msg_id)) {
+		# TODO: this is erious enough the server might want to disconnect the client.
+		# make a callback to receive this condition
+		$log->warn('received line with invalid message id');
+		return $self->send(0, 'error', 'invalid protocol formatting');
+	}
+	
+	# if id is in use, kill the previous invocation and complain loudly
+	if (defined $self->_command_state->{$msg_id}) {
+		$log->warn("received duplicate message id $msg_id");
+		...;
+	}
+	
+	# ensure validate and handle are defined for this message
+	my ($validate, $handler);
+	unless (MessageName->check($msgname)
+	  and ($validate= $self->can("validate_msg_$msgname"))
+	  and ($handler= $self->can("handle_msg_$msgname"))
+	) {
+		$log->warn("received unknown message $msgname");
+		return $self->send($msg_id, 'error', 'invalid', "unknown message $msgname");
+	}
+	
+	# validate message payload
+	if (!try { $validate->($self, \@msg); 1; } catch { 0 }) {
+		$log->warn("received invalid message arguments");
+		return $self->send($msg_id, 'error', 'invalid', "bad message arguments");
+	}
+	
+	# dispatch to the handle_msg_ method
+	$self->_command_state->{$msg_id}= { message => \@msg, start_ts => time };
+	$self->_run_handler($msg_id, $handler, [ $msg_id, \@msg ]);
+}
+
+sub _run_handler {
+	my ($self, $msg_id, $handler, $args)= @_;
+	try {
+		if (blessed($args) and $args->can('recv')) {
+			# If arguments are a promise, receive the value now
+			# this could also croak() us down to the catch block.
+			$args= [ $args->recv ];
+		}
+		$log->debug('handling message '.$self->_command_state->{$msg_id}{message}[0])
+			if $log->is_debug;
+		# Run the handler
+		my @result= $handler->($self, @$args);
+		# Handler must return the message response (list of protocol fields),
+		#  or a promise and callback method for asynchronous completion
+		@result > 0 or die 'Handler returned empty result';
+		unless (ref $result[0] && $result[0]->can('recv')) {
+			# if it returns the response, queue the response to go to the client
+			$self->send($msg_id, @result);
+			# and clean up the message handling state
+			$self->_end_command($msg_id);
+		}
+		else {
+			ref $result[1] eq 'CODE' or die 'Promise must be accompanied by coderef';
+			# if it returns a promise, store the promise in pending_commands
+			$self->_command_state->{$msg_id}{continue}= \@result;
+			# If there wasn't a callback on the promise, set one, which calls back through this
+			# handler logic.
+			unless ($result[0]->cb) {
+				my $callback= $result[1];
+				my $anon_name= '_run_handler(continue-'.++$self->_command_state->{$msg_id}{continue_count}.')';
+				weaken($self);
+				$result[0]->cb(subname $anon_name => sub {
+					delete $self->_command_state->{$msg_id}{continue};
+					$self->_run_handler($msg_id, $callback, $_[0]);
+				});
+			}
+		}
+	}
+	catch {
+		# send a 'failed' result
+		$self->send($msg_id, 'error', $_ =~ /denied/? 'denied' : 'failed');
+		# and clean up the message handling state
+		$self->_end_command($msg_id);
+	};
+}
+
+sub _end_command {
+	my ($self, $id)= @_;
+	my $state= delete $self->_command_state->{$id};
+	return unless $state;
+	if ($state->{continue}) {
+		$state->{continue}[0]->cb(undef);
+		$state->{continue}[0]->croak('canceled')
+			unless $state->{continue}[0]->ready;
+	}
+}
 
 };
 1;
