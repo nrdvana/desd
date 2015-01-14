@@ -5,6 +5,7 @@ use App::Desd::Types -types;
 use Carp;
 use Module::Runtime;
 use Sub::Name;
+use Scalar::Util 'blessed', 'weaken';
 use mro 'c3';
 use Moo;
 use namespace::clean;
@@ -375,7 +376,7 @@ sub handle_msg_killscript {
 	my (undef, $svcname, $script)= @$msg;
 	my $promise= $self->app->killscript($svcname, $script);
 	return $promise, subname 'handle_msg_killscript(2)' => sub {
-		my $res= shift;
+		my ($self, $res)= @_;
 		# check that the result is formed the way we expect.
 		exists $res->{$_} or croak for qw( success reaped exit_type exit_value timeout );
 		if ($res->{success}) {
@@ -383,7 +384,7 @@ sub handle_msg_killscript {
 		} else {
 			return 'error', $res->{timeout}? 'still_running' : 'failed';
 		}
-	});
+	};
 }
 
 sub _server_handle_input_line {
@@ -391,35 +392,54 @@ sub _server_handle_input_line {
 	# get message id and message name
 	chomp($input);
 	my ($msg_id, @msg)= split /\t/, $input;
-	# if id is in use, kill the previous invocation and complain loudly
-	...;
-	# validate message name and validate payload
-	...;
-	# dispatch to the handle_msg_ method
-	$self->_server_run_handler($msg_id, ..., [ $msg_id, $msg ]);
+	my $msgname= $msg[0];
 	
-		my @result= ...;
-		$self->_server_handle_handler_result($id, @result);
+	if (!MessageInstance->check_valid($msg_id)) {
+		# TODO: this is erious enough the server might want to disconnect the client.
+		# make a callback to receive this condition
+		return $self->send(0, 'error', 'invalid protocol formatting');
 	}
-	catch {
-	};
+	
+	# if id is in use, kill the previous invocation and complain loudly
+	if (defined $self->_pending_commands->{$msg_id}) {
+		...;
+	}
+	
+	# ensure validate and handle are defined for this message
+	my ($validate, $handler);
+	unless (MessageName->check_valid($msgname)
+	  and ($validate= $self->can("validate_msg_$msgname"))
+	  and ($handler= $self->can("handle_msg_$msgname"))
+	) {
+		return $self->send($msg_id, 'error', 'invalid', "unknown message $msgname");
+	}
+	
+	# validate message payload
+	if (!try { $validate->($self, \@msg); 1; } catch { 0 }) {
+		return $self->send($msg_id, 'error', 'invalid', "bad message arguments");
+	}
+	
+	# dispatch to the handle_msg_ method
+	$self->_pending_commands->{$msg_id}= { message => \@msg, start_ts => time };
+	$self->_server_run_handler($msg_id, $handler, [ $msg_id, \@msg ]);
 }
 
 sub _server_run_handler {
-	my ($self, $msg_id, $coderef, $args)= @_;
+	my ($self, $msg_id, $handler, $args)= @_;
 	try {
-		if (ref $args and $args->can('recv')) {
+		if (blessed($args) and $args->can('recv')) {
 			# If arguments are a promise, receive the value now
+			# this could also croak() us down to the catch block.
 			$args= [ $args->recv ];
 		}
 		# Run the handler
-		my @result= $coderef->(@args);
+		my @result= $handler->($self, @$args);
 		# Handler must return the message response (list of protocol fields),
 		#  or a promise and callback method for asynchronous completion
 		@result > 0 or die 'Handler returned empty result';
 		unless (ref $result[0] && $result[0]->can('recv')) {
 			# if it returns the response, queue the response to go to the client
-			$self->send($id, @result);
+			$self->send($msg_id, @result);
 			# and clean up the message handling state
 			...;
 		}
@@ -430,15 +450,16 @@ sub _server_run_handler {
 			# If there wasn't a callback on the promise, set one, which calls back through this
 			# handler logic.
 			unless ($result[0]->cb) {
-				weaken($self);
 				my $callback= $result[1];
-				$result[0]->cb(sub { $self->_server_run_handler($msg_id, $callback, $_[0]) });
+				my $anon_name= '_server_run_handler(continue-'.++$self->_pending_commands->{$msg_id}{continue_count}.')';
+				weaken($self);
+				$result[0]->cb(subname $anon_name => sub { $self->_server_run_handler($msg_id, $callback, $_[0]) });
 			}
 		}
 	}
 	catch {
 		# send a 'failed' result
-		$self->send($id, 'error', $_ =~ /denied/? 'denied' : 'failed');
+		$self->send($msg_id, 'error', $_ =~ /denied/? 'denied' : 'failed');
 		# and clean up the message handling state
 		...;
 	};
@@ -500,6 +521,7 @@ sub async_send_msg {
 package App::Desd::Protocol::ServerRole {
 use Try::Tiny;
 use Carp;
+use Sub::Name;
 use Moo::Role;
 
 =head1 SERVER ATTRIBUTES / METHODS
@@ -513,7 +535,7 @@ has '_pending_commands', is => 'rw', init_arg => undef, default => sub {{}};
 
 sub BUILD {}
 
-after 'BUILD' => subname after_BUILD => sub {
+after 'BUILD' => subname 'after(BUILD)' => sub {
 	# set up server events on $self->handle_ae
 };
 

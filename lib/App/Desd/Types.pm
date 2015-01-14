@@ -22,5 +22,6 @@ declare 'KillScript',    where { ($_//'') =~
 };
 declare 'MessageInstance', where { defined $_ and $_ =~ /^[0-9]+$/ };
 declare 'MessageField',    where { defined $_ and !($_ =~ /[\t\n]/) };
+declare 'MessageName',     where { defined $_ and $_ =~ /^[a-z0-9_]+$/ };
 
 1;
