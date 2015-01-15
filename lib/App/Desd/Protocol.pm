@@ -147,6 +147,10 @@ sub send {
 	MessageInstance->assert_valid($_[0]);
 	MessageField->assert_valid($_) for @_;
 	my $text= join("\t", @_)."\n";
+	
+	# TODO: use handle_ae if it is initialized, else fall back to direct writes
+	...;
+	
 	$self->flush;
 	io_retry:
 	my $wrote= CORE::send($self->handle, $text, 0)
@@ -158,6 +162,11 @@ sub send {
 		goto io_retry;
 	}
 	1;
+}
+
+sub recv {
+	# TODO: use AnyEvent if handle_ae is initialized, else fall back to direct reads
+	...;
 }
 
 =head2 async_send
@@ -440,6 +449,33 @@ These are available when the protocol object is used for the client side:
 has '_pending_commands', is => 'rw', init_arg => undef, default => sub {{}};
 sub _next_cmd_id { $_[0]{_next_cmd_id}++ || 0 }
 
+sub _start_async_readline {
+	my $self= shift;
+	return if $self->{listening};
+	weaken($self);
+	$self->{listening}= 1;
+	$self->handle_ae->push_read(line => sub {
+		$self->{listening}= 0;
+		$self->_handle_input_line($_[1]);
+	});
+}
+
+sub _handle_input_line {
+	my ($self, $input)= @_;
+	# get message id this line is responding to
+	$log->debug('handle input "'.$input.'"');
+	my ($msg_id, @msg)= split /\t/, $input;
+	if (defined $self->_pending_commands->{$msg_id}
+		&& ($msg[1] =~ /^ok|error$/)
+	) {
+		my $command= delete $self->_pending_commands->{$msg_id};
+		$log->debug('got reply for '.$command->{msg}[0]) if $log->is_debug;
+		$command->{promise}->send(\@msg);
+	}
+	# re-queue the listener if more commands to listen for
+	$self->_start_async_readline if %{$self->_pending_commands};
+}
+
 =head2 send_msg
 
   $response= $proto->send_msg( \@message );
@@ -454,7 +490,9 @@ sub send_msg {
 	my ($self, $msg)= @_;
 	$self->can('validate_msg_'.$msg->[0])->($self, $msg);
 	$self->send(0, @$msg);
-	return $self->recv_result(0);
+	while (my $result= $self->recv) {
+		return $result if shift @$result == 0;
+	}
 }
 
 =head2 async_send_msg
@@ -472,6 +510,7 @@ sub async_send_msg {
 	my $cmd_id= $self->_next_cmd_id;
 	$self->async_send($cmd_id, @$msg);
 	$self->_pending_commands->{$cmd_id}= { msg => $msg, promise => $promise };
+	$self->_start_async_readline;
 	return $promise;
 }
 
