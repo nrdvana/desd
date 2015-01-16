@@ -148,25 +148,50 @@ sub send {
 	MessageField->assert_valid($_) for @_;
 	my $text= join("\t", @_)."\n";
 	
-	# TODO: use handle_ae if it is initialized, else fall back to direct writes
-	...;
-	
-	$self->flush;
-	io_retry:
-	my $wrote= CORE::send($self->handle, $text, 0)
-		// croak "send: $!";
-	$log->trace("wrote $wrote '".substr($text,0,$wrote)."'")
-		if $log->is_trace;
-	if ($wrote < length($text)) {
-		substr($text, 0, $wrote)= '';
-		goto io_retry;
+	if ($self->has_handle_ae) {
+		$self->handle_ae->push_write($text);
+		$self->flush;
+	}
+	else {
+		while (1) {
+			my $wrote= CORE::send($self->handle, $text, 0)
+				// croak "send: $!";
+			$log->trace("wrote $wrote '".substr($text,0,$wrote)."'")
+				if $log->is_trace;
+			last if $wrote >= length($text);
+			substr($text, 0, $wrote)= '';
+		}
 	}
 	1;
 }
 
+=head2 recv
+
+  $field_arrayref= $proto->recv;
+
+Blocks until it has read the entire next line (but running the event loop
+if AnyEvent is being used), splits it into fields, and validates them.
+
+Returns an arrayref, where the first element is the message id.
+
+=cut
+
 sub recv {
-	# TODO: use AnyEvent if handle_ae is initialized, else fall back to direct reads
-	...;
+	my $self= shift;
+	my $line;
+	if ($self->has_handle_ae) {
+		my $line_cv= AnyEvent->condvar;
+		$self->handle_ae->push_read(line => sub { $line_cv->send($_[1]) });
+		$line= $line_cv->recv;
+	}
+	else {
+		my $fh= $self->handle;
+		$line= <$fh>;
+	}
+	my @fields= split /\t/, $line;
+	MessageInstance->assert_valid($fields[0]);
+	MessageField->assert_valid($_) for @fields;
+	\@fields;
 }
 
 =head2 async_send
