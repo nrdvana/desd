@@ -150,18 +150,13 @@ sub send {
 	
 	if ($self->has_handle_ae) {
 		$self->handle_ae->push_write($text);
-		$self->flush;
 	}
 	else {
-		while (1) {
-			my $wrote= CORE::send($self->handle, $text, 0)
-				// croak "send: $!";
-			$log->trace("wrote $wrote '".substr($text,0,$wrote)."'")
-				if $log->is_trace;
-			last if $wrote >= length($text);
-			substr($text, 0, $wrote)= '';
-		}
+		$self->handle->print($text);
 	}
+	$log->trace("wrote '$text'")
+		if $log->is_trace;
+	$self->flush;
 	1;
 }
 
@@ -221,10 +216,14 @@ Block until all pending data is written
 
 sub flush {
 	my $self= shift;
-	return unless $self->has_handle_ae;
-	my $flushed= AnyEvent->condvar;
-	$self->handle_ae->on_drain(sub { $flushed->send(1) });
-	$flushed->recv;
+	if ($self->has_handle_ae) {
+		my $flushed= AnyEvent->condvar;
+		$self->handle_ae->on_drain(sub { $flushed->send(1) });
+		$flushed->recv;
+	}
+	else {
+		$self->handle->flush;
+	}
 }
 
 =head1 PROTOCOL
