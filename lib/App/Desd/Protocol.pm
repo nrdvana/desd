@@ -1,4 +1,5 @@
 package App::Desd::Protocol {
+use IO::Handle;
 use AnyEvent;
 use AnyEvent::Handle;
 use Try::Tiny;
@@ -40,23 +41,19 @@ it opens to the child processes.
 
 =head1 ATTRIBUTES
 
-=head2 handle
+=head2 socket
 
-The socket connection on which to communicate
-
-=head2 handle_ae
-
-The AnyEvent::Handle used for asynchronous queueing of read/write operations.
+The socket or AnyEvent::Handle on which to communicate
 
 =cut
 
-has 'handle',    is => 'rw', required => 1;
+has 'socket',    is => 'rw', required => 1;
 
-has 'handle_ae', is => 'lazy', predicate => 1;
-
-sub _build_handle_ae {
+sub _wrap_socket {
 	require AnyEvent::Handle;
-	AnyEvent::Handle->new(fh => $_[0]->handle, linger => 0);
+	my $self= shift;
+	$self->socket(AnyEvent::Handle->new(fh => $self->socket, linger => 0))
+		unless $self->socket->can('push_write');
 }
 
 =head2 
@@ -93,12 +90,9 @@ sub new_client {
 			or croak "Can't connect to $path: $!";
 	}
 	
-	my $handle_ae= $socket->can('push_write')? $socket : undef;
-	$socket= $handle_ae->fh if defined $handle_ae;
-	
 	return $class
 		->_with_client_role
-		->new( handle => $socket, (defined $handle_ae? (handle_ae => $handle_ae) : ()), %opts );
+		->new( socket => $socket, %opts );
 }
 
 sub _with_client_role {
@@ -119,13 +113,9 @@ sub new_server {
 	@_ >= 3 && (@_ & 1) == 1 or croak "Wrong number of arguments";
 	my ($class, $socket, $app, %opts)= @_;
 	
-	my $handle_ae= $socket->can('push_write')? $socket : undef;
-	$socket= $handle_ae->fh if defined $handle_ae;
-	$handle_ae //= AnyEvent::Handle->new(fh => $socket);
-	
 	return $class
 		->_with_server_role
-		->new( handle => $socket, handle_ae => $handle_ae, app => $app, %opts );
+		->new( socket => $socket, app => $app, %opts );
 }
 
 sub _with_server_role {
@@ -148,11 +138,11 @@ sub send {
 	MessageField->assert_valid($_) for @_;
 	my $text= join("\t", @_)."\n";
 	
-	if ($self->has_handle_ae) {
-		$self->handle_ae->push_write($text);
+	if ($self->socket->can('push_write')) {
+		$self->socket->push_write($text);
 	}
 	else {
-		$self->handle->print($text);
+		$self->socket->print($text);
 	}
 	$log->trace("wrote '$text'")
 		if $log->is_trace;
@@ -173,15 +163,15 @@ Returns an arrayref, where the first element is the message id.
 
 sub recv {
 	my $self= shift;
+	my $s= $self->socket;
 	my $line;
-	if ($self->has_handle_ae) {
+	if ($s->can('push_write')) {
 		my $line_cv= AnyEvent->condvar;
-		$self->handle_ae->push_read(line => sub { $line_cv->send($_[1]) });
+		$s->push_read(line => sub { $line_cv->send($_[1]) });
 		$line= $line_cv->recv;
 	}
 	else {
-		my $fh= $self->handle;
-		$line= <$fh>;
+		$line= <$s>;
 	}
 	my @fields= split /\t/, $line;
 	MessageInstance->assert_valid($fields[0]);
@@ -199,11 +189,14 @@ Like send, but pushes the data into an AnyEvent queue.
 
 sub async_send {
 	my $self= shift;
+	my $s= $self->socket;
+	$s= $self->_wrap_socket unless $s->can('push_write');
 	MessageInstance->assert_valid($_[0]);
 	MessageField->assert_valid($_) for @_;
 	my $text= join("\t", @_)."\n";
-	$self->handle_ae->push_write($text);
+	$s->push_write($text);
 	$log->trace("queued write ".length($text)." '$text'") if $log->is_trace;
+	1;
 }
 
 =head2 flush
@@ -216,13 +209,14 @@ Block until all pending data is written
 
 sub flush {
 	my $self= shift;
-	if ($self->has_handle_ae) {
+	my $s= $self->socket;
+	if ($s->can('push_write')) {
 		my $flushed= AnyEvent->condvar;
-		$self->handle_ae->on_drain(sub { $flushed->send(1) });
+		$s->on_drain(sub { $flushed->send(1) });
 		$flushed->recv;
 	}
 	else {
-		$self->handle->flush;
+		$s->flush;
 	}
 }
 
@@ -449,8 +443,13 @@ sub handle_msg_killscript {
 }
 
 sub close {
-	$_[0]->handle->close if defined $_[0]->handle;
-	$_[0]->handle_ae->destroy if $_[0]->has_handle_ae;
+	my $self= shift;
+	my $s= $self->socket;
+	if ($s->can('push_write')) {
+		$s->destroy;
+	} else {
+		$s->close
+	}
 }
 
 sub DESTROY {
@@ -462,6 +461,8 @@ sub DESTROY {
 package App::Desd::Protocol::ClientRole {
 use Try::Tiny;
 use Carp;
+use Log::Any '$log';
+use Scalar::Util 'weaken';
 use Moo::Role;
 
 =head1 CLIENT ATTRIBUTES / METHODS
@@ -476,9 +477,10 @@ sub _next_cmd_id { $_[0]{_next_cmd_id}++ || 0 }
 sub _start_async_readline {
 	my $self= shift;
 	return if $self->{listening};
+	my $s= $self->socket;
 	weaken($self);
 	$self->{listening}= 1;
-	$self->handle_ae->push_read(line => sub {
+	$s->push_read(line => sub {
 		$self->{listening}= 0;
 		$self->_handle_input_line($_[1]);
 	});
@@ -562,8 +564,9 @@ sub BUILD {}
 
 after 'BUILD' => subname 'after(BUILD)' => sub {
 	my $self= shift;
+	$self->_wrap_socket;
 	weaken($self);
-	$self->handle_ae->on_read(sub {
+	$self->socket->on_read(sub {
 		$log->trace('on_read: '.length($_[0]{rbuf}).' in buffer') if $log->is_trace;
 		my $p= index($_[0]{rbuf}, "\n");
 		if ($p >= 0) {
@@ -572,10 +575,10 @@ after 'BUILD' => subname 'after(BUILD)' => sub {
 			$self->_handle_input_line($line);
 		}
 	});
-	$self->handle_ae->on_error(sub {
+	$self->socket->on_error(sub {
 		$self->close();
 	});
-	$self->handle_ae->on_eof(sub {
+	$self->socket->on_eof(sub {
 		$self->close();
 	});
 	$log->debug('set server event handlers');

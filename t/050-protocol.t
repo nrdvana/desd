@@ -1,7 +1,7 @@
 use strict;
 use warnings;
 use Test::More;
-use AE;
+use AnyEvent;
 use AnyEvent::Util 'portable_socketpair';
 use Scalar::Util 'weaken';
 use FindBin;
@@ -38,6 +38,10 @@ sub undefine_freed_ok {
 	$message ||= 'freed '.join(', ', keys %$things_get_freed);
 	ref $_ && weaken($_) for values %$things_get_freed;
 	$_[0]= undef; # this should cause everything weakly-ref'd in the set to get garbage collected
+	# This gives the event loop a chance to clean up
+	my $cv= AE::cv;
+	my $w= AE::timer 0.5, 0, sub { $cv->send; };
+	$cv->recv;
 	my @not_freed= grep { defined $things_get_freed->{$_} } keys %$things_get_freed;
 	if (@not_freed) {
 		fail($message);
@@ -61,8 +65,8 @@ subtest echo => sub {
 	$cv->recv;
 	is_deeply( \@msg_args, ['foo'], 'echo arguments delivered' );
 	
-	undefine_freed_ok($server, { server => $server, handle_ae => $server->handle_ae, handle => $server->handle });
-	undefine_freed_ok($client, { client => $client, handle_ae => $client->handle_ae, handle => $client->handle });
+	undefine_freed_ok($client, { client => $client, socket => $client->socket });
+	undefine_freed_ok($server, { server => $server, socket => $server->socket });
 };
 
 done_testing;
