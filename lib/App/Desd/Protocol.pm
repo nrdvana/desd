@@ -539,8 +539,8 @@ sub async_send_msg {
 	$self->can('validate_msg_'.$msg->[0])->($self, $msg);
 	my $promise= AnyEvent->condvar;
 	my $cmd_id= $self->_next_cmd_id;
-	$self->async_send($cmd_id, @$msg);
 	$self->_pending_commands->{$cmd_id}= { msg => $msg, promise => $promise };
+	$self->async_send($cmd_id, @$msg);
 	$self->_start_async_readline;
 	return $promise;
 }
@@ -600,7 +600,7 @@ sub _handle_input_line {
 		# TODO: this is erious enough the server might want to disconnect the client.
 		# make a callback to receive this condition
 		$log->warn('received line with invalid message id');
-		return $self->send(0, 'error', 'invalid protocol formatting');
+		return $self->async_send(0, 'error', 'invalid protocol formatting');
 	}
 	
 	# if id is in use, kill the previous invocation and complain loudly
@@ -616,13 +616,13 @@ sub _handle_input_line {
 	  and ($handler= $self->can("handle_msg_$msgname"))
 	) {
 		$log->warn("received unknown message $msgname");
-		return $self->send($msg_id, 'error', 'invalid', "unknown message $msgname");
+		return $self->async_send($msg_id, 'error', 'invalid', "unknown message $msgname");
 	}
 	
 	# validate message payload
 	if (!try { $validate->($self, \@msg); 1; } catch { 0 }) {
 		$log->warn("received invalid message arguments");
-		return $self->send($msg_id, 'error', 'invalid', "bad message arguments");
+		return $self->async_send($msg_id, 'error', 'invalid', "bad message arguments");
 	}
 	
 	# dispatch to the handle_msg_ method
@@ -647,7 +647,7 @@ sub _run_handler {
 		@result > 0 or die 'Handler returned empty result';
 		unless (ref $result[0] && $result[0]->can('recv')) {
 			# if it returns the response, queue the response to go to the client
-			$self->send($msg_id, @result);
+			$self->async_send($msg_id, @result);
 			# and clean up the message handling state
 			$self->_end_command($msg_id);
 		}
@@ -670,7 +670,7 @@ sub _run_handler {
 	}
 	catch {
 		# send a 'failed' result
-		$self->send($msg_id, 'error', $_ =~ /denied/? 'denied' : 'failed');
+		$self->async_send($msg_id, 'error', $_ =~ /denied/? 'denied' : 'failed');
 		# and clean up the message handling state
 		$self->_end_command($msg_id);
 	};
