@@ -492,11 +492,16 @@ sub _handle_input_line {
 	$log->debug('handle input "'.$input.'"');
 	my ($msg_id, @msg)= split /\t/, $input;
 	if (defined $self->_pending_commands->{$msg_id}
-		&& ($msg[1] =~ /^ok|error$/)
+		&& ($msg[0] =~ /^ok|error$/)
 	) {
 		my $command= delete $self->_pending_commands->{$msg_id};
 		$log->debug('got reply for '.$command->{msg}[0]) if $log->is_debug;
-		$command->{promise}->send(\@msg);
+		my $result= shift @msg;
+		if ($result eq 'ok') {
+			$command->{promise}->send(\@msg);
+		} else {
+			$command->{promise}->croak(join("\t", @msg));
+		}
 	}
 	# re-queue the listener if more commands to listen for
 	$self->_start_async_readline if %{$self->_pending_commands};
