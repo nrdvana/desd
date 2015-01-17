@@ -172,10 +172,10 @@ sub recv {
 	}
 	else {
 		$line= <$s>;
+		chomp($line);
 	}
 	my @fields= split /\t/, $line;
 	MessageInstance->assert_valid($fields[0]);
-	MessageField->assert_valid($_) for @fields;
 	\@fields;
 }
 
