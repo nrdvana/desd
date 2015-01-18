@@ -45,6 +45,12 @@ it opens to the child processes.
 
 The socket or AnyEvent::Handle on which to communicate
 
+=head2 on_close
+
+  $proto->on_close( sub { my ($proto, $reason)= @_; ... } );
+
+Get or set the callback to fire when the connection is closed.
+
 =cut
 
 has 'socket',    is => 'rw', required => 1;
@@ -52,8 +58,33 @@ has 'socket',    is => 'rw', required => 1;
 sub _wrap_socket {
 	require AnyEvent::Handle;
 	my $self= shift;
-	$self->socket(AnyEvent::Handle->new(fh => $self->socket, linger => 0))
-		unless $self->socket->can('push_write');
+	unless ($self->socket->can('push_write')) {
+		$self->socket(AnyEvent::Handle->new(fh => $self->socket, linger => 0));
+		weaken($self);
+		$self->socket->on_error(sub {
+			$self->close('socket error') if $self;
+		});
+		$self->socket->on_eof(sub {
+			$self->close('remote end closed') if $self;
+		});
+	}
+}
+
+has 'on_close',  is => 'rw';
+
+sub BUILD {
+	my $self= shift;
+	if ($self->socket->can('push_write')) {
+		weaken($self);
+		$self->socket->on_error(sub {
+			$self->close('socket error') if $self;
+		}) unless $self->socket->on_error;
+		$self->socket->on_eof(sub {
+			$self->close('remote end closed') if $self;
+		}) unless $self->socket->on_eof;
+	}
+};
+
 }
 
 =head2 
@@ -443,17 +474,19 @@ sub handle_msg_killscript {
 }
 
 sub close {
-	my $self= shift;
+	my ($self, $reason)= @_;
 	my $s= $self->socket;
 	if ($s->can('push_write')) {
 		$s->destroy;
 	} else {
-		$s->close
+		$s->close;
 	}
+	$self->on_close->($self, $reason)
+		if $self->on_close;
 }
 
 sub DESTROY {
-	$_[0]->close;
+	$_[0]->close('protocol object freed');
 }
 
 };
@@ -580,12 +613,6 @@ after 'BUILD' => subname 'after(BUILD)' => sub {
 			$self->_handle_input_line($line);
 		}
 	});
-	$self->socket->on_error(sub {
-		$self->close();
-	});
-	$self->socket->on_eof(sub {
-		$self->close();
-	});
 	$log->debug('set server event handlers');
 };
 
@@ -597,16 +624,18 @@ sub _handle_input_line {
 	my $msgname= $msg[0];
 	
 	unless (MessageInstance->check($msg_id)) {
-		# TODO: this is erious enough the server might want to disconnect the client.
-		# make a callback to receive this condition
 		$log->warn('received line with invalid message id');
-		return $self->async_send(0, 'error', 'invalid protocol formatting');
+		$self->async_send(0, 'error', 'invalid protocol formatting');
+		$self->close('client protocol error');
+		return;
 	}
 	
 	# if id is in use, kill the previous invocation and complain loudly
 	if (defined $self->_command_state->{$msg_id}) {
 		$log->warn("received duplicate message id $msg_id");
-		...;
+		$self->async_send($msg_id, 'error', 'message id already in progress');
+		$self->close('client protocol error');
+		return;
 	}
 	
 	# ensure validate and handle are defined for this message
