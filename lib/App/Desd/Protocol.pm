@@ -68,6 +68,7 @@ sub _wrap_socket {
 			$self->close('remote end closed') if $self;
 		});
 	}
+	$self->socket;
 }
 
 has 'on_close',  is => 'rw';
@@ -84,8 +85,6 @@ sub BUILD {
 		}) unless $self->socket->on_eof;
 	}
 };
-
-}
 
 =head2 
 
