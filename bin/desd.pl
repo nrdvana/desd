@@ -5,21 +5,21 @@ use Getopt::Long;
 use Pod::Usage;
 
 my $opt_verbose= $ENV{DEBUG} || 0;
-my $opt_base_dir;
+my %opt;
 
 Getopt::Long::Configure(qw: no_ignore_case bundling permute :);
 GetOptions(
 	'help|h|?'       => sub { pod2usage(1) },
 	'verbose|v'      => sub { $opt_verbose++ },
 	'quiet|q'        => sub { $opt_verbose-- },
-	'base-dir|d=s'   => \$opt_base_dir,
+	'base-dir|d=s'   => \$opt{base_dir},
 ) or pod2usage(2);
 
 require Log::Any::Adapter;
 Log::Any::Adapter->set( 'Daemontools', filter => "debug-$opt_verbose" );
 
 require App::Desd;
-exit App::Desd->new(\@ARGV)->run;
+exit App::Desd->new(\%opt)->run;
 
 __END__
 
@@ -43,14 +43,14 @@ will re-evaluate the symbolic path.
 
 =item --config CONFIGFILE
 
-Use CONFIGFILE instead of the default "./desd.conf".  Note that relative paths
+Use CONFIGFILE instead of the default "./desd.conf.yaml".  Note that relative paths
 are relative to base-dir (which defaults to the current directory)
 
 =item -s SOCKET
 
 =item --socket SOCKET
 
-Use SOCKET instead of the default "./control.sock".  Note that relative paths
+Use SOCKET instead of the default "./desd.control".  Note that relative paths
 are relative to base-dir (which defaults to the current directory)
 
 =item -v
