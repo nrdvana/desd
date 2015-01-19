@@ -2,7 +2,8 @@ package App::Desd;
 use strict;
 use warnings;
 use App::Desd::Types;
-use Cwd;
+use IO::Handle;
+use Cwd 'getcwd';
 use File::Spec::Functions;
 use Scalar::Util 'weaken';
 use Moo;
@@ -59,7 +60,7 @@ control socket.  (and requests must be through signals or changes to the config 
 
 sub required_daemonproxy_version { '1.1.0' }
 
-has 'base_dir',      is => 'ro', isa => Str, required => 1, default => sub { Cwd::getcwd() };
+has 'base_dir',      is => 'ro', isa => Str, required => 1, default => sub { getcwd() };
 has 'config_path',   is => 'ro', isa => Str, required => 1, default => sub { './desd.conf.yaml' };
 has 'control_path',  is => 'ro', isa => Str, required => 1, default => sub { './desd.control' };
 
@@ -115,9 +116,10 @@ sub _version_compare {
 sub exec_daemonproxy {
 	my $self= shift;
 	
-	my $desd_path= rel2abs($0, getcwd());
+	my $desd_path= rel2abs($0, getcwd()) or die "Can't locate 'desd'\n";
 	# TODO: make daemonproxy_path configurable
-	my $daemonproxy_path= `which daemonproxy`;
+	my $daemonproxy_path= `which daemonproxy` or die "Can't locate 'daemonproxy'\n";
+	my $env_path= `which env` or die "Can't locate 'env'\n";
 	
 	# chdir to the base_dir, to make sure all our paths work from there
 	chdir($self->base_dir)
@@ -136,19 +138,19 @@ sub exec_daemonproxy {
 		or die "Require daemonproxy version ".$self->required_daemonproxy_version."\n";
 	
 	# build daemonproxy config
-	my @desd_args= '--inner';
+	my @desd_args;
 	push @desd_args, '--base-dir', $self->base_dir;
 	push @desd_args, '--config', $self->config_path
 		if $self->config_path ne './desd.conf.yaml';
 	push @desd_args, '--socket', $self->control_path
 		if $self->control_path ne './desd.control';
 	my $config= join('', map { join("\t", @$_)."\n" }
-		[ 'service.args',    'desd', $desd_path, @desd_args ],
+		[ 'service.args',    'desd', $env_path, 'DESD_IS_CONTROLLER=1', $desd_path, @desd_args ],
 		[ 'service.fds',     'desd', 'control.event', 'control.cmd', 'stderr' ],
 		[ 'service.auto_up', 'desd', 1, 'always' ]
 	);
 	
-	# This is slightly wrong... we just assume the pipe has a large enough buffer
+	# This is slightly wrong... we just assume the pipe has a large enough kernel buffer
 	# to hold our config (which should be less than a page anyway, so no real-world
 	# architecture should ever deadlock here)
 	my ($pipe_r, $pipe_w)= pipe;

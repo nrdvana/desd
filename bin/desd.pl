@@ -11,11 +11,6 @@ use Pod::Usage;
 Where BASE_DIR defaults to the current dir, CONTROL_SOCKET defaults to $base/desd.control
 and CONFIG_FILE defaults to $base/desd.conf.yaml
 
-=cut
-
-my $opt_verbose= $ENV{DEBUG} || 0;
-my %opt;
-
 =head1 OPTIONS
 
 =over
@@ -59,6 +54,9 @@ Decrease logging output. (is relative to DEBUG env var)
 
 =cut
 
+my $opt_verbose= $ENV{DEBUG} || 0;
+my %opt;
+
 Getopt::Long::Configure(qw: no_ignore_case bundling permute :);
 GetOptions(
 	'help|h|?'       => sub { pod2usage(1) },
@@ -80,14 +78,18 @@ if ($opt_version) {
 }
 
 my $desd= App::Desd->new(\%opt);
-$desd->exec_daemonproxy;
+if ($ENV{DESD_IS_CONTROLLER}) {
+	$desd->run;
+} else {
+	$desd->exec_daemonproxy;
+}
 
 __END__
 
 =head1 SIGNALS
 
-Desd has several default signal handlers.  These behaviors can be overridden
-with the config file, but the defaults are:
+Desd handles signals sent to daemonproxy with these default actions (which
+can be overridden in the config file):
 
 =over
 
@@ -127,6 +129,11 @@ Run-time equivalent of option --quiet.
 desd is affected by the following environment variables:
 
 =over
+
+=item DESD_IS_CONTROLLER
+
+When false, desd behaves like a top level script, and execs daemonproxy.
+When true, desd behaves as a daemonproxy contoller script.
 
 =item DEBUG
 
