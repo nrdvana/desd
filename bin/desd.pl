@@ -4,28 +4,17 @@ use warnings;
 use Getopt::Long;
 use Pod::Usage;
 
-my $opt_verbose= $ENV{DEBUG} || 0;
-my %opt;
-
-Getopt::Long::Configure(qw: no_ignore_case bundling permute :);
-GetOptions(
-	'help|h|?'       => sub { pod2usage(1) },
-	'verbose|v'      => sub { $opt_verbose++ },
-	'quiet|q'        => sub { $opt_verbose-- },
-	'base-dir|d=s'   => \$opt{base_dir},
-) or pod2usage(2);
-
-require Log::Any::Adapter;
-Log::Any::Adapter->set( 'Daemontools', filter => "debug-$opt_verbose" );
-
-require App::Desd;
-exit App::Desd->new(\%opt)->run;
-
-__END__
-
 =head1 SYNOPSIS
 
-  desd DIRECTORY # config file is DIRECTORY/config.yaml, socket is DIRECTORY/control.sock
+  desd [-d BASE_DIR] [-s CONTROL_SOCKET] [-c CONFIG_FILE]
+
+Where BASE_DIR defaults to the current dir, CONTROL_SOCKET defaults to $base/desd.control
+and CONFIG_FILE defaults to $base/desd.conf.yaml
+
+=cut
+
+my $opt_verbose= $ENV{DEBUG} || 0;
+my %opt;
 
 =head1 OPTIONS
 
@@ -35,9 +24,10 @@ __END__
 
 =item --base-dir PATH
 
-Change to PATH before starting.  If PATH contains symlinks or
-relative paths they will be preserved, so that when SIGHUP is received it
-will re-evaluate the symbolic path.
+Change to PATH before starting or after receiving certain signals.  If PATH is
+relative to the current directory, it will be prefixed by the canonical form
+of the current directory.  If PATH contains symlinks they will be preserved
+and re-traversed during later chdir()s.
 
 =item -c CONFIGFILE
 
@@ -66,6 +56,33 @@ Increase logging output. (is relative to DEBUG env var)
 Decrease logging output. (is relative to DEBUG env var)
 
 =back
+
+=cut
+
+Getopt::Long::Configure(qw: no_ignore_case bundling permute :);
+GetOptions(
+	'help|h|?'       => sub { pod2usage(1) },
+	'verbose|v'      => sub { $opt_verbose++ },
+	'quiet|q'        => sub { $opt_verbose-- },
+	'version'        => \$opt_version,
+	'base-dir|d=s'   => \$opt{base_dir},
+	'config|c=s'     => \$opt{config_path},
+	'socket|s=s'     => \$opt{control_path},
+) or pod2usage(2);
+
+require Log::Any::Adapter;
+Log::Any::Adapter->set( 'Daemontools', filter => "debug-$opt_verbose" );
+
+require App::Desd;
+if ($opt_version) {
+	sprintf("desd version %s\n", App::Desd->VERSION);
+	exit 1;
+}
+
+my $desd= App::Desd->new(\%opt);
+$desd->exec_daemonproxy;
+
+__END__
 
 =head1 SIGNALS
 
