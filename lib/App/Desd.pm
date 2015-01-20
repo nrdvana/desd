@@ -62,10 +62,12 @@ control socket.  (and requests must be through signals or changes to the config 
 =cut
 
 sub required_daemonproxy_version { '1.1.0' }
+sub config_path_default { './desd.conf.yaml' }
+sub control_path_default { './desd.control' }
 
 has 'base_dir',      is => 'ro', required => 1, default => sub { getcwd() };
-has 'config_path',   is => 'ro', required => 1, default => sub { './desd.conf.yaml' };
-has 'control_path',  is => 'ro', required => 1, default => sub { './desd.control' };
+has 'config_path',   is => 'ro', required => 1, default => sub { shift->config_path_default };
+has 'control_path',  is => 'ro', required => 1, default => sub { shift->control_path_default };
 
 sub config_path_abs {
 	my $self= shift;
@@ -140,13 +142,15 @@ sub exec_daemonproxy {
 	_version_compare($1, $self->required_daemonproxy_version) >= 0
 		or die "Require daemonproxy version ".$self->required_daemonproxy_version."\n";
 	
-	# build daemonproxy config
+	# determine args to re-exec desd.  Only include values which are not the default
 	my @desd_args;
 	push @desd_args, '--base-dir', $self->base_dir;
 	push @desd_args, '--config', $self->config_path
-		if $self->config_path ne './desd.conf.yaml';
+		if $self->config_path ne $self->config_path_default;
 	push @desd_args, '--socket', $self->control_path
-		if $self->control_path ne './desd.control';
+		if $self->control_path ne $self->control_path_default;
+	
+	# Build configuration commands for daemonproxy
 	my $config= join('', map { join("\t", @$_)."\n" }
 		[ 'service.args',    'desd', $env_path, 'DESD_IS_CONTROLLER=1', $desd_path, @desd_args ],
 		[ 'service.fds',     'desd', 'control.event', 'control.cmd', 'stderr' ],
@@ -156,12 +160,14 @@ sub exec_daemonproxy {
 	# This is slightly wrong... we just assume the pipe has a large enough kernel buffer
 	# to hold our config (which should be less than a page anyway, so no real-world
 	# architecture should ever deadlock here)
-	
+	# Then we set this pipe to be daemonproxy's stdin
 	pipe(my ($pipe_r, $pipe_w)) or die "pipe: $!";
 	$pipe_w->print($config);
 	close($pipe_w);
+	require POSIX;
 	POSIX::dup2(fileno $pipe_r, 0) or die "dup2(stdin): $!";
 	close($pipe_r);
+	
 	# exec daemonproxy
 	exec($daemonproxy_path, '-c', '-')
 		# if that failed, abort
