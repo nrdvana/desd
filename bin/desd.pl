@@ -55,6 +55,7 @@ Decrease logging output. (is relative to DEBUG env var)
 =cut
 
 my $opt_verbose= $ENV{DEBUG} || 0;
+my $opt_version;
 my %opt;
 
 Getopt::Long::Configure(qw: no_ignore_case bundling permute :);
@@ -73,7 +74,7 @@ Log::Any::Adapter->set( 'Daemontools', filter => "debug-$opt_verbose" );
 
 require App::Desd;
 if ($opt_version) {
-	sprintf("desd version %s\n", App::Desd->VERSION);
+	printf("desd version %s\n", App::Desd->VERSION);
 	exit 1;
 }
 

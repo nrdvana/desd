@@ -1,7 +1,8 @@
 package App::Desd;
 use strict;
 use warnings;
-use App::Desd::Types;
+use AnyEvent;
+use App::Desd::Types -types;
 use IO::Handle;
 use Cwd 'getcwd';
 use File::Spec::Functions;
@@ -10,6 +11,8 @@ use Moo;
 use namespace::clean;
 
 # ABSTRACT: Daemonproxy Example Supervisor Daemon
+
+our $VERSION= '0.000000';
 
 =head1 SYNOPSIS
 
@@ -60,9 +63,9 @@ control socket.  (and requests must be through signals or changes to the config 
 
 sub required_daemonproxy_version { '1.1.0' }
 
-has 'base_dir',      is => 'ro', isa => Str, required => 1, default => sub { getcwd() };
-has 'config_path',   is => 'ro', isa => Str, required => 1, default => sub { './desd.conf.yaml' };
-has 'control_path',  is => 'ro', isa => Str, required => 1, default => sub { './desd.control' };
+has 'base_dir',      is => 'ro', required => 1, default => sub { getcwd() };
+has 'config_path',   is => 'ro', required => 1, default => sub { './desd.conf.yaml' };
+has 'control_path',  is => 'ro', required => 1, default => sub { './desd.control' };
 
 sub config_path_abs {
 	my $self= shift;
@@ -80,7 +83,7 @@ AnyEvent asynchronous variable of the exit code of the program.
 
 =cut
 
-has 'exitcode', is => 'lazy', isa => 'CondVar', default => sub { AE::cv };
+has 'exitcode', is => 'lazy', isa => CondVar, default => sub { AE::cv };
 
 sub BUILD {
 	my $self= shift;
@@ -106,7 +109,7 @@ sub _version_compare {
 	my @a= ($a =~ /(\d+)/g);
 	my @b= ($b =~ /(\d+)/g);
 	my $ret;
-	while (@a || @b)
+	while (@a || @b) {
 		$ret= ((shift @a)||0) <=> ((shift @b)||0)
 			and last;
 	}
@@ -153,15 +156,16 @@ sub exec_daemonproxy {
 	# This is slightly wrong... we just assume the pipe has a large enough kernel buffer
 	# to hold our config (which should be less than a page anyway, so no real-world
 	# architecture should ever deadlock here)
-	my ($pipe_r, $pipe_w)= pipe;
+	
+	pipe(my ($pipe_r, $pipe_w)) or die "pipe: $!";
 	$pipe_w->print($config);
 	close($pipe_w);
-	POSIX::dup2(fileno $pipe_r, 0) or die "dup2(stdin)";
+	POSIX::dup2(fileno $pipe_r, 0) or die "dup2(stdin): $!";
 	close($pipe_r);
 	# exec daemonproxy
 	exec($daemonproxy_path, '-c', '-')
 		# if that failed, abort
-		or die "Failed to exec daemonproxy: $!\n";
+		or die "Failed to exec daemonproxy: $!";
 }
 
 =head2 run
