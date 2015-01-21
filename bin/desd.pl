@@ -3,6 +3,8 @@ use strict;
 use warnings;
 use Getopt::Long;
 use Pod::Usage;
+use FindBin;
+use lib "$FindBin::Bin/../lib";
 
 =head1 SYNOPSIS
 
@@ -56,17 +58,21 @@ Decrease logging output. (is relative to DEBUG env var)
 
 my $opt_verbose= $ENV{DEBUG} || 0;
 my $opt_version;
+my $opt_control_socket;
 my %opt;
 
 Getopt::Long::Configure(qw: no_ignore_case bundling permute :);
 GetOptions(
-	'help|h|?'       => sub { pod2usage(1) },
-	'verbose|v'      => sub { $opt_verbose++ },
-	'quiet|q'        => sub { $opt_verbose-- },
-	'version'        => \$opt_version,
-	'base-dir|d=s'   => \$opt{base_dir},
-	'config|c=s'     => \$opt{config_path},
-	'socket|s=s'     => \$opt{control_path},
+	'help|h|?'           => sub { pod2usage(1) },
+	'verbose|v'          => sub { $opt_verbose++ },
+	'quiet|q'            => sub { $opt_verbose-- },
+	'version'            => \$opt_version,
+	'base-dir|d=s'       => \$opt{base_dir},
+	'config|c=s'         => \$opt{config_path},
+	'socket|s=s'         => \$opt{control_path},
+	'desd_path=s'        => \$opt{desd_path},
+	'daemonproxy_path=s' => \$opt{daemonproxy_path},
+	'control=s'          => \$opt_control_socket,
 ) or pod2usage(2);
 
 require Log::Any::Adapter;
@@ -78,9 +84,14 @@ if ($opt_version) {
 	exit 1;
 }
 
+# strip null keys
+defined $opt{$_} or delete $opt{$_}
+	for keys %opt;
+
 my $desd= App::Desd->new(\%opt);
-if ($ENV{DESD_IS_CONTROLLER}) {
-	$desd->run;
+
+if (defined $opt_control_socket) {
+	$desd->run_controller($opt_control_socket);
 } else {
 	$desd->exec_daemonproxy;
 }

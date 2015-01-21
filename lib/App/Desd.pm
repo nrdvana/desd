@@ -5,7 +5,7 @@ use AnyEvent;
 use App::Desd::Types -types;
 use IO::Handle;
 use Cwd 'getcwd';
-use File::Spec::Functions;
+use File::Spec::Functions 'rel2abs', 'file_name_is_absolute';
 use Scalar::Util 'weaken';
 use Moo;
 use namespace::clean;
@@ -79,6 +79,9 @@ sub control_path_abs {
 	rel2abs($self->control_path, $self->base_dir);
 }
 
+has 'desd_path',        is => 'rw', default => sub { rel2abs($0) };
+has 'daemonproxy_path', is => 'rw', default => sub { chomp(my $f= `which daemonproxy`) };
+
 =head2 daemonproxy
 
 Protocol object for communicating with Daemonproxy.
@@ -116,8 +119,8 @@ Fails if it can't find a high enough version of daemonproxy.
 =cut
 
 sub _version_compare {
-	my @a= ($a =~ /(\d+)/g);
-	my @b= ($b =~ /(\d+)/g);
+	my @a= ($_[0] =~ /(\d+)/g);
+	my @b= ($_[1] =~ /(\d+)/g);
 	my $ret;
 	while (@a || @b) {
 		$ret= ((shift @a)||0) <=> ((shift @b)||0)
@@ -129,10 +132,13 @@ sub _version_compare {
 sub exec_daemonproxy {
 	my $self= shift;
 	
-	my $desd_path= rel2abs($0, getcwd()) or die "Can't locate 'desd'\n";
-	# TODO: make daemonproxy_path configurable
-	my $daemonproxy_path= `which daemonproxy` or die "Can't locate 'daemonproxy'\n";
-	my $env_path= `which env` or die "Can't locate 'env'\n";
+	# Get absolute paths to programs before changing directories
+	my $desd_path= $self->desd_path;
+	-x $desd_path or die "Can't locate 'desd' (not executable: '$desd_path')\n";
+	my $daemonproxy_path= $self->daemonproxy_path;
+	-x $daemonproxy_path or die "Can't locate 'daemonproxy' (not executable: '$daemonproxy_path')\n";
+	chomp(my $env_path= `which env`);
+	-x $env_path or die "Can't locate 'env' (not executable: '$env_path')\n";
 	
 	# chdir to the base_dir, to make sure all our paths work from there
 	chdir($self->base_dir)
@@ -140,18 +146,20 @@ sub exec_daemonproxy {
 	
 	# Make sure we can re-exec ourselves and end up back in the same script
 	my $desd_ver= `"$desd_path" --version`;
-	$? == 0 and ($desd_ver =~ /desd version (\d+\.\d+)/) and $1 eq $self->VERSION
-		or die "Can't re-exec desd\n";
+	($desd_ver =~ /desd version (\d+\.\d+)/)
+		or die "Can't re-exec desd ('$desd_path')\n";
+	$1 eq $self->VERSION
+		or die "'$desd_path' seems to be different version\n";
 	
 	# Make sure we can find a valid daemonproxy
 	my $version= `"$daemonproxy_path" --version`;
-	$? == 0 and ($version =~ /^daemonproxy version (\d+\.\d+\.\d+)/)
+	($version =~ /^daemonproxy version (\d+\.\d+\.\d+)/)
 		or die "Unrecognized daemonproxy version string from $daemonproxy_path\n";
 	_version_compare($1, $self->required_daemonproxy_version) >= 0
 		or die "Require daemonproxy version ".$self->required_daemonproxy_version."\n";
 	
 	# determine args to re-exec desd.  Only include values which are not the default
-	my @desd_args;
+	my @desd_args= ('--control=3');
 	push @desd_args, '--base-dir', $self->base_dir;
 	push @desd_args, '--config', $self->config_path
 		if $self->config_path ne $self->config_path_default;
@@ -160,8 +168,8 @@ sub exec_daemonproxy {
 	
 	# Build configuration commands for daemonproxy
 	my $config= join('', map { join("\t", @$_)."\n" }
-		[ 'service.args',    'desd', $env_path, 'DESD_IS_CONTROLLER=1', $desd_path, @desd_args ],
-		[ 'service.fds',     'desd', 'control.event', 'control.cmd', 'stderr' ],
+		[ 'service.args',    'desd', $desd_path, @desd_args ],
+		[ 'service.fds',     'desd', 'null', 'stdout', 'stderr', 'control.socket' ],
 		[ 'service.auto_up', 'desd', 1, 'always' ]
 	);
 	
@@ -203,7 +211,8 @@ sub run_as_controller {
 	# Create Daemonproxy protocol object
 	require AnyEvent::Handle;
 	my $dp_handle= AnyEvent::Handle->new(fh => \*STDIN);
-	$self->daemonproxy(Daemonproxy::Protocol->new(handle => $dp_handle));
+	my $dp= Daemonproxy::Protocol->new(handle => $dp_handle);
+	$self->daemonproxy($dp);
 	
 	# Begin a statedump and start running
 	# This will suspend all callbacks and then resume them once the statedump
