@@ -79,6 +79,14 @@ sub control_path_abs {
 	rel2abs($self->control_path, $self->base_dir);
 }
 
+=head2 daemonproxy
+
+Protocol object for communicating with Daemonproxy.
+
+=cut
+
+has 'daemonproxy', is => 'rw';
+
 =head2 exitcode
 
 AnyEvent asynchronous variable of the exit code of the program.
@@ -174,21 +182,35 @@ sub exec_daemonproxy {
 		or die "Failed to exec daemonproxy: $!";
 }
 
-=head2 run
+=head2 run_as_controller
 
   $exitcode= $desd->run;
 
 Install signal handlers, and blocks (using AnyEvent) until the program should
 terminate.  Performs all startup and shutdown sequences.
 
+Assumes STDIN is the daemonproxy communication socket.
+
 =cut
 
-sub run {
+sub run_as_controller {
 	my $self= shift;
+
+	# Install signal handlers
 	weaken($self);
 	local $SIG{TERM}= sub { $self->exitcode->send(0); };
-	# TODO: install other signal handlers
-	...;
+	
+	# Create Daemonproxy protocol object
+	require AnyEvent::Handle;
+	my $dp_handle= AnyEvent::Handle->new(fh => \*STDIN);
+	$self->daemonproxy(Daemonproxy::Protocol->new(handle => $dp_handle));
+	
+	# Begin a statedump and start running
+	# This will suspend all callbacks and then resume them once the statedump
+	#  is complete, which will also initialize the callbacks for us.
+	$self->begin_resync;
+	
+	# Run the AnyEvent main loop for the rest of the program
 	$self->exitcode->recv;
 }
 
