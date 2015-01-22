@@ -70,8 +70,8 @@ GetOptions(
 	'base-dir|d=s'       => \$opt{base_dir},
 	'config|c=s'         => \$opt{config_path},
 	'socket|s=s'         => \$opt{control_path},
-	'desd_path=s'        => \$opt{desd_path},
-	'daemonproxy_path=s' => \$opt{daemonproxy_path},
+	'desd-path=s'        => \$opt{desd_path},
+	'daemonproxy-path=s' => \$opt{daemonproxy_path},
 	'control=s'          => \$opt_control_socket,
 ) or pod2usage(2);
 
