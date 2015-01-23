@@ -223,4 +223,55 @@ sub run_as_controller {
 	$self->exitcode->recv;
 }
 
+sub begin_resync {
+	my ($self)= @_;
+	
+	# remove triggers from daemonproxy protocol object
+	...;
+	# wipe the daemonproxy state
+	$self->daemonproxy->reset();
+	
+	# then start a satatedump
+	weaken($self);
+	$self->daemonproxy->on_event(sub { $self->continue_resync if $_[0][0] eq 'statedump_complete' });
+	$self->daemonproxy->async_send('statedump');
+	$self->daemonproxy->async_send('echo', 'statedump_complete');
+}
+
+sub continue_resync {
+	my ($self, $todo)= @_;
+	weaken $self;
+	
+	# Initialize todo if this is the first iteration
+	unless ($todo) {
+		# Restore event handlers
+		$self->daemonproxy->on_event(sub { $self->handle_event(@_[0]) });
+		
+		# build list of what needs done
+		$todo= {
+			map { $_->name => 1 } $self->daemonproxy->service_list, $self->config->service_list
+		};
+		
+		# Handle outstandng signals first
+		...;
+	}
+
+	# start reconciling services, but only until we've sent a few messages
+	my $commands_sent= 0;
+	while (keys %$todo && $commands_sent < 16) {
+		my $svname= delete $services{(keys %$todo)[0]};
+		# if configured and doesn't exist, create it
+		# if exists and not configured, remove it unless it is running
+		# change args/fds if they don't match
+		# start it if it is tagged as up and isn't
+		# stop it if it is tagged as down and isn't
+	}
+	# if some remaining, set idle handler.  else clear it
+	if (keys %$todo) {
+		$self->{continue_resync} ||= AE::idle sub { $self->continue_resync($todo) };
+	} else {
+		delete $self->{continue_resync};
+	}
+}
+
 1;
