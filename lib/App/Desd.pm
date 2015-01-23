@@ -244,27 +244,37 @@ sub continue_resync {
 	
 	# Initialize todo if this is the first iteration
 	unless ($todo) {
-		# Restore event handlers
+		# Restore normal event handler
 		$self->daemonproxy->on_event(sub { $self->handle_event(@_[0]) });
 		
+		my %services= (
+			map { $_->name => 1 }
+				$self->daemonproxy->service_list,
+				$self->config->service_list
+		);
 		# build list of what needs done
-		$todo= {
-			map { $_->name => 1 } $self->daemonproxy->service_list, $self->config->service_list
-		};
-		
-		# Handle outstandng signals first
-		...;
+		$todo= [
+			(map { [ signal => $_->name ] } $self->daemonproxy->pending_signals),
+			(map { [ service => $_ ] } keys %services)
+		];
 	}
 
-	# start reconciling services, but only until we've sent a few messages
+	# start reconciling state, but only until we've sent a few messages
 	my $commands_sent= 0;
-	while (keys %$todo && $commands_sent < 16) {
-		my $svname= delete $services{(keys %$todo)[0]};
-		# if configured and doesn't exist, create it
-		# if exists and not configured, remove it unless it is running
-		# change args/fds if they don't match
-		# start it if it is tagged as up and isn't
-		# stop it if it is tagged as down and isn't
+	while (@$todo && $commands_sent < 16) {
+		my $task= shift @$todo;
+		if ($task[0] eq 'signal') {
+			# clear signal
+			# perform configured action for signal
+			$self->perform_signal_action
+		}
+		elsif ($task[0] eq 'service') {
+			# if configured and doesn't exist, create it
+			# if exists and not configured, remove it unless it is running
+			# change args/fds if they don't match
+			# start it if it is tagged as up and isn't
+			# stop it if it is tagged as down and isn't
+		}
 	}
 	# if some remaining, set idle handler.  else clear it
 	if (keys %$todo) {
@@ -272,6 +282,19 @@ sub continue_resync {
 	} else {
 		delete $self->{continue_resync};
 	}
+}
+
+sub queue_coderef {
+	my ($self, $todo)= @_;
+	push @{$self->{coderef_queue}}, $todo;
+	weaken($self);
+	$self->{_next_coderef_callback} ||= AE::idle sub {
+		my $coderef_queue= $self->{coderef_queue};
+		(shift @$coderef_queue)->()
+			if @$coderef_queue;
+		delete $self->{_next_coderef_callback}
+			unless @$coderef_queue;
+	};
 }
 
 1;
