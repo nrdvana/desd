@@ -239,49 +239,41 @@ sub begin_resync {
 }
 
 sub continue_resync {
-	my ($self, $todo)= @_;
+	my $self= shift;
 	weaken $self;
 	
-	# Initialize todo if this is the first iteration
-	unless ($todo) {
-		# Restore normal event handler
-		$self->daemonproxy->on_event(sub { $self->handle_event(@_[0]) });
-		
-		my %services= (
-			map { $_->name => 1 }
-				$self->daemonproxy->service_list,
-				$self->config->service_list
-		);
-		# build list of what needs done
-		$todo= [
-			(map { [ signal => $_->name ] } $self->daemonproxy->pending_signals),
-			(map { [ service => $_ ] } keys %services)
-		];
-	}
+	# Restore normal event handler
+	$self->daemonproxy->on_event(sub { $self->handle_event($_[0]) });
 
-	# start reconciling state, but only until we've sent a few messages
-	my $commands_sent= 0;
-	while (@$todo && $commands_sent < 16) {
-		my $task= shift @$todo;
-		if ($task[0] eq 'signal') {
-			# clear signal
-			# perform configured action for signal
-			$self->perform_signal_action
-		}
-		elsif ($task[0] eq 'service') {
-			# if configured and doesn't exist, create it
-			# if exists and not configured, remove it unless it is running
-			# change args/fds if they don't match
-			# start it if it is tagged as up and isn't
-			# stop it if it is tagged as down and isn't
-		}
+	# Queue processing for any pending signals
+	for ($self->daemonproxy->pending_signals) {
+		my $signal= $_;
+		$self->queue_coderef(sub { $self->reconcile_signal($sig); });
 	}
-	# if some remaining, set idle handler.  else clear it
-	if (keys %$todo) {
-		$self->{continue_resync} ||= AE::idle sub { $self->continue_resync($todo) };
-	} else {
-		delete $self->{continue_resync};
+	
+	# Queue processing for every service, configured or persistent
+	# It shouldn't actually hurt to reconcile a service twice, but the list will
+	# be almost entirely redundant if this controller gets restarted.
+	my %seen;
+	for (grep { !$seen{$_}++ } map { $_->name } $self->config->service_list, $self->daemonproxy->service_list) {
+		my $svname= $_;
+		$self->queue_coderef(sub { $self->reconcile_service($svname) });
 	}
+}
+
+sub reconcile_signal {
+	my ($self, $signame)= @_;
+	# clear signal
+	# perform configured action for signal
+}
+
+sub reconcile_service {
+	my ($self, $svname)= @_;
+	# if configured and doesn't exist, create it
+	# if exists and not configured, remove it unless it is running
+	# change args/fds if they don't match
+	# start it if it is tagged as up and isn't
+	# stop it if it is tagged as down and isn't
 }
 
 sub queue_coderef {
