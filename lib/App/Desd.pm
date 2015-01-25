@@ -255,7 +255,7 @@ sub continue_resync {
 	# It shouldn't actually hurt to reconcile a service twice, but the list will
 	# be almost entirely redundant if this controller gets restarted.
 	my %seen;
-	for (grep { !$seen{$_}++ } map { $_->name } $self->config->service_list, $self->daemonproxy->service_list) {
+	for (grep { !$seen{$_}++ } ($self->config->service_name_list, $self->daemonproxy->service_name_list)) {
 		my $svname= $_;
 		$self->queue_coderef(sub { $self->reconcile_service($svname) });
 	}
@@ -269,9 +269,20 @@ sub reconcile_signal {
 
 sub reconcile_service {
 	my ($self, $svname)= @_;
-	# if configured and doesn't exist, create it
-	# if exists and not configured, remove it unless it is running
-	# change args/fds if they don't match
+	my $cfg= $self->config->service($svname)->action('start');
+	my $sv= $self->daemonproxy->service($svname);
+	if ($cfg) {
+		# If configured and doesn't exist, create it
+		# Change args/fds if they don't match
+		$sv->set_arguments(@{ $cfg->run });
+		$sv->set_handles(@{ $cfg->io });
+		$sv->set_tag_values(want => 'up') if $cfg->want_up;
+		$sv->start if $cfg->want_up and !$sv->is_running;
+	}
+	else if ($sv->exists) {
+		# if exists and not configured, remove it unless it is running
+		$sv->delete unless $sv->is_running;
+	}
 	# start it if it is tagged as up and isn't
 	# stop it if it is tagged as down and isn't
 }
