@@ -8,16 +8,15 @@ env:
 
 # Define a global logger for all services (and desd itself)
 # This program relays it all to syslog.
-logger: logger -p daemon.myapp
+log: logger -p daemon.myapp
 
 # Desd monitors the mysql instance and restarts it if it dies.
 service myapp-mysql:
   env:
     mysql_dir: /home/myapp/mysql
-
   # Note, you may need more custom arguments to mysql depending on how many things
   # in your /etc/mysql/my.cnf need overridden.
-  action start: mysqld --datadir=$mysql_dir --server-id=1
+  run: mysqld --datadir=$mysql_dir --server-id=1
     --port=$mysql_port --socket=$mysql_socket --pid-file=$mysql_dir/mysqld.pid
     --log-error=/dev/stderr
 
@@ -25,10 +24,15 @@ service myapp-mysql:
 # These arguments are examples of what you might need to do to a service
 # to make it run attached to a service monitor.
 service myapp:
-  action start: myapp --no-daemonize --log-to-stderr --mysql-socket=$mysql_socket
+  run: myapp --no-daemonize --log-to-stderr --mysql-socket=$mysql_socket
 
 # What you get for free (defaults implied by this config):
+#  * a "start" action for each service which launches it and returns
+#     true if the "check" action succeeds
+#  * a "check" action that returns true if the service has been
+#     running for more than 1 second.
 #  * a "stop" action for each service which performs a graceful kill
+#     and returns true the moment the service is reaped.
 #  * a "restart" action which runs a stop, then start
 #  * services automatically start when desd starts, and are restarted
 #    if they exit for any reason other than "stop" action.

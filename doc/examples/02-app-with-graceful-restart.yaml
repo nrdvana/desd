@@ -17,7 +17,7 @@ handle port443: TCP:443
 
 # Define a global logger for all services (and desd itself)
 # This program relays it all to syslog.
-logger: logger -p daemon.www
+log: logger -p daemon.www
 
 service www:
   # These environment variables tell our www daemon where to find its sockets
@@ -29,18 +29,26 @@ service www:
   # Configure the file descriptors for all actions of this service
   io: null logger logger desd_comm port80 port443
   
-  # The start action runs the webserver
-  # Note we use 'runuid' (from the Perp project) to drop root priveleges
-  action start: runuid -s www /usr/local/bin/my_webserver /srv/www
-  
-  # The reset action starts a new copy of the webserver, which after
-  # initializing itself and running self-tests, will use file descriptor 3
-  # (desd_comm) to ask desd to promote it to the main service process, and
-  # then "action stop" the old one.  When desd replies "ok", this instance
-  # will begin accepting requests on the port 80 and 443 (file descriptors
-  # 4 and 5)  No connection was ever rejected during this handoff, even if
-  # the startup of the new process took a while.
+  # The start action runs the webserver.
+  # Note we use 'runuid' (from the Perp project) to drop root priveleges.
+  # This service needs to be aware of the DESD_SV_INSTANCE environment
+  # variable so it can write its temporary files to a different location
+  # and not clobber the previous instance.  Of course you can also write
+  # a wrapper script that uses that variable to set all sorts of other
+  # environment variables and commandline switches.
+  run: runuid -s www /usr/local/bin/my_webserver /srv/www
+
+  # The reset action starts a new copy of the webserver, then performs the
+  # check action on the new instance to make sure it's ready.  Then it
+  # promotes the new instance to be the offical, and runs "stop" on the
+  # previous instance.
+  # The original file descriptors for port80 and port443 are never closed, and
+  # no connection was ever rejected during this handoff.
   action restart:
-    run: runuid -s www /usr/local/bin/my_webserver /srv/www
-    # need to override set-mode so that Desd doesn't stop/start the service
-    set-mode: up
+    run: { internal: sv_restart_overlapped }
+  
+  # Note that this script probably needs to be aware of the DESD_SV_INSTANCE
+  # environment variable to know how to access the new instance and not the
+  # main instance.
+  action check:
+    run: /usr/local/bin/my_webserver_tests
