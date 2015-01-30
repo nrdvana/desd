@@ -199,22 +199,52 @@ The default "run" is the internal method "wait_for_uptime 3".
 
 =head2 handle NAME
 
-  handle port80: 'tcp:80'
-  handle port80:
-    type: socket_tcp
-	bind: 'any:80'
-  handle ssl_key: *</root/ssl/key.pem
-  handle ssl_key:
-    type: file_read
-	path: /root/ssl/key.pem
-	alloc: each
-  handle pipe_1_r:
-	type: pipe_read
-	peer: pipe_1_w
+  handle port80:  socket tcp *:80
+  handle ssl_key: file   read,ondemand /root/ssl/key.pem
+  handle port443:
+    type: socket
+	flags: tcp
+	target: '*:443'
 
-Declare a named filehandle (or socket, pipe, etc).  There are a variety of
-convenient short forms, or the longer map for where you can spell out the
-options.
+Declare a named filehandle (or socket, pipe, etc).  You can specify it in
+string form as 3 whitespace-separated tokens of name, flags, and target,
+or you can make an array of those 3 elements, or a map with friendly names.
+
+=over
+
+=item file handles
+
+Type is 'file'.  Flags are a combination of 'read','write','create','truncate',
+'mkdir','ondemand', or '-' for empty set of flags.  Target is a filename.
+If the filename is relative it will be relative to BASE_DIR of desd.
+
+WARNING: If the file cannot be opened, the service cannot be started!
+
+=item socket handles
+
+Type is 'socket'.  Flags are a combination of 'unix','inet','stream','dgram',
+'seqpacket','listen' and aliases of 'tcp' (for inet,stream) and 'udp'
+(for inet,dgram).
+
+The target is an address to bind to the socket.  Outbound connecting is not
+supported by desd because it would entail a large amount of error handling
+and extra protocol that should live inside the service and not the supervisor.
+The binding of ports is supported so that the service's socket can be brought
+up immediately and never closed between restarts of the service.
+
+=item pipes
+
+Type is 'pipe'.  Flags are 'read' or 'write'. (not both).  Target is the name
+of another handle which will become the other end of the pipe; essentially
+two handles are being configured here.
+
+=item socketpairs
+
+Type is 'socketpair'.  Flags are 'unix','inet','stream','dgram','seqpacket',
+which determine the type of socket pair created.  Target is the name of
+another handle which will be the other end of this one.
+
+=back
 
 =head2 event NAME
 
