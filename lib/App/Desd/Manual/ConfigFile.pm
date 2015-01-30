@@ -14,6 +14,10 @@ keys are recognized:
 
 =head3 env
 
+  env:
+    SHELL: /bin/bash
+	PATH: /usr/bin:/usr/local/bin
+
 A map of environment variables that will be applied for any program
 or script that is executed in relation to this service.
 
@@ -44,6 +48,8 @@ The path to the base directory of this Desd instance.
 
 =head3 goal
 
+  goal: up
+
 Specifies the initial goal for the service.  Each service has a goal which is one of:
 
 =over
@@ -70,16 +76,25 @@ If the service is running, run the stop action until it exits.  Once it stops
 
 =head3 run
 
-The program to execute.  If you specify a string and it contains shell meta
-characters it will be passed off to the shell.  If it contains whitspace it
-will be split directly and passed to exec(), with automatic argv0.  If you
-specify an array it will be pased to exec() with automatic argv0.
+  run: "command"
+  run: "command && command"
+  run: [ 'command', '--arg1', 'option with spaces' ]
+  run: { exec: [ 'busybox', 'args' ], argv0: 'ls' }
 
-=head3 argv0
+Specifies the program to execute.  Can be specified as a map, an array, or a
+string.  If you specify a string and it contains shell meta characters it will
+be passed to '-c' of $SHELL (or /bin/sh if $SHELL is unset).
 
-If you need to override argv[0] in the call to exec(), specify this parameter.
+If you specify an array it is interpreted as arguments to exec(), though argv0
+is implied.  If you need to change argv0, use the map form where you can specify
+argv0.
 
 =head3 io
+
+  io: null stderr stderr
+  io: null null null
+  io: [ desd_comm, log, log ]
+  io: null stderr stderr port80 port443 ssl_key
 
 The array of file descriptors to pass to the program.  These are named handles,
 as defined in the rest of your desd configuration.  The default is to use the
@@ -90,7 +105,18 @@ then it is the desd logger, and if desd doesn't define a logger it is desd's STD
 Another common handle alias is 'desd_comm' which gives the script a socket to
 communicate with desd to make API calls.
 
+More exoting options include setting up pipes between services, or binding TCP
+ports to persistent sockets which are handed to the service, or open handles
+to files that the service couldn't otherwise read.
+
+Can be specified as a whitespace-delimited string, or as an actual list.
+Handle names cannot contain whitespace anyway, so the first is preferred.
+
 =head3 action NAME
+
+  action start:
+    run: ...
+	env: ...
 
 Actions describe a thing that you want to do to a service.  Think of them like
 methods called on a service.  Some actions are built-in, but you can define any
@@ -170,6 +196,25 @@ The default "parallel" is "*" meaning this action may run at any time.
 The default "run" is the internal method "wait_for_uptime 3".
 
 =back
+
+=head2 handle NAME
+
+  handle port80: 'tcp:80'
+  handle port80:
+    type: socket_tcp
+	bind: 'any:80'
+  handle ssl_key: *</root/ssl/key.pem
+  handle ssl_key:
+    type: file_read
+	path: /root/ssl/key.pem
+	alloc: each
+  handle pipe_1_r:
+	type: pipe_read
+	peer: pipe_1_w
+
+Declare a named filehandle (or socket, pipe, etc).  There are a variety of
+convenient short forms, or the longer map for where you can spell out the
+options.
 
 =head2 event NAME
 
