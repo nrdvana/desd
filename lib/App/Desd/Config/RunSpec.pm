@@ -20,8 +20,8 @@ sub BUILD {
 		or die "Run must specify 'internal:' xor 'exec:'\n";
 }
 
-sub _coerce_run {
-	my $thing= shift;
+sub coerce {
+	my ($class, $thing)= @_;
 	defined $thing or die "Run specification cannot be empty\n";
 	if (!ref $thing) {
 		# Process any special interpretation for the string
@@ -39,7 +39,7 @@ sub _coerce_run {
 	if (defined my $args= delete $thing->{args}) {
 		$thing->{exec}= [ $args->[0], @$args ];
 	}
-	return __PACKAGE__->new($thing);
+	return $class->new($thing);
 }
 
 sub _interpret_run_string {
